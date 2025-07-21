@@ -26,7 +26,7 @@ const Index = () => {
           <div className="flex items-center gap-3">
             <ThemeToggle />
             <Link to="/chat">
-              <Button size="lg" className="gap-2 bg-gradient-to-r from-primary to-secondary hover:from-primary/80 hover:to-secondary/80">
+              <Button variant="light-blue" size="lg" className="gap-2">
                 <MessageCircle className="w-5 h-5" />
                 Start Chatting
               </Button>
@@ -48,11 +48,11 @@ const Index = () => {
             <span className="text-lg text-muted-foreground ml-2">- Anonymous chatting with real people & AI</span>
           </div>
           <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-            Start private one-to-one conversations or join group chat rooms. Share photos, videos, and connect instantly with strangers worldwide!
+            Start private one-to-one conversations or join group chat rooms. Connect instantly with strangers worldwide!
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-6">
             <Link to="/chat">
-              <Button size="lg" className="text-lg px-8 py-6 gap-3 bg-gradient-to-r from-primary to-secondary hover:from-primary/80 hover:to-secondary/80">
+              <Button variant="light-blue" size="lg" className="text-lg px-8 py-6 gap-3">
                 <MessageCircle className="w-6 h-6" />
                 Start Private Chat
               </Button>

@@ -3,7 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
-import { Send, Users, MessageCircle, Home, UserPlus, Search } from 'lucide-react';
+import { Send, Users, MessageCircle, Home, SkipForward, LogOut } from 'lucide-react';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
@@ -71,7 +71,9 @@ const Chat = () => {
   const [username, setUsername] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [activeTab, setActiveTab] = useState('direct');
-  const [searchUser, setSearchUser] = useState('');
+  const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
+  const [randomMatch, setRandomMatch] = useState<CasualUser | null>(null);
+  const [reconnectTimeout, setReconnectTimeout] = useState<NodeJS.Timeout | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -485,10 +487,105 @@ const Chat = () => {
     return chat.user1_id === currentUser.id ? chat.user2_username : chat.user1_username;
   };
 
-  const filteredUsers = onlineUsers.filter(user => 
-    user.username.toLowerCase().includes(searchUser.toLowerCase()) &&
-    user.user_id !== currentUser?.id
-  );
+  // Random user connection functions
+  const findRandomUser = async () => {
+    if (!currentUser) return;
+    
+    setIsSearchingForMatch(true);
+    
+    // Clear any existing timeout
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      setReconnectTimeout(null);
+    }
+    
+    // Get available users (excluding current user)
+    const { data: availableUsers, error } = await supabase
+      .from('casual_users')
+      .select('*')
+      .neq('id', currentUser.id)
+      .order('last_active', { ascending: false })
+      .limit(100);
+    
+    if (error || !availableUsers || availableUsers.length === 0) {
+      setIsSearchingForMatch(false);
+      toast({
+        title: "No users available",
+        description: "There are no other users online right now. Please try again later.",
+      });
+      return;
+    }
+    
+    // Pick a random user
+    const randomUser = availableUsers[Math.floor(Math.random() * availableUsers.length)];
+    setRandomMatch(randomUser);
+    setIsSearchingForMatch(false);
+    
+    // Create or find existing direct chat
+    await startRandomDirectChat(randomUser);
+    
+    toast({
+      title: "Connected!",
+      description: `You're now chatting with ${randomUser.username}`,
+    });
+  };
+
+  const startRandomDirectChat = async (targetUser: CasualUser) => {
+    if (!currentUser) return;
+
+    // Check if chat already exists
+    const existingChat = directChats.find(chat => 
+      (chat.user1_id === currentUser.id && chat.user2_id === targetUser.id) ||
+      (chat.user1_id === targetUser.id && chat.user2_id === currentUser.id)
+    );
+
+    if (existingChat) {
+      setSelectedDirectChat(existingChat);
+      setActiveTab('direct');
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('direct_chats')
+      .insert({
+        user1_id: currentUser.id,
+        user2_id: targetUser.id,
+        user1_username: currentUser.username,
+        user2_username: targetUser.username
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating direct chat:', error);
+      return;
+    }
+
+    setDirectChats(prev => [data, ...prev]);
+    setSelectedDirectChat(data);
+    setActiveTab('direct');
+  };
+
+  const leaveRandomChat = () => {
+    setSelectedDirectChat(null);
+    setRandomMatch(null);
+    
+    // Set timeout to find new user after 10 seconds
+    const timeout = setTimeout(() => {
+      findRandomUser();
+    }, 10000);
+    
+    setReconnectTimeout(timeout);
+    
+    toast({
+      title: "Chat ended",
+      description: "Looking for a new person to chat with in 10 seconds...",
+    });
+  };
+
+  const skipToNextUser = () => {
+    leaveRandomChat();
+  };
 
   if (!currentUser) {
     return (
@@ -517,7 +614,7 @@ const Chat = () => {
                   </div>
                 </div>
                 <p className="text-muted-foreground text-lg">
-                  Start private conversations or join group chat rooms. Share photos, videos, and connect instantly!
+                  Start private conversations or join group chat rooms. Connect instantly with strangers worldwide!
                 </p>
               </div>
               
@@ -532,7 +629,8 @@ const Chat = () => {
                 <Button 
                   onClick={createUser} 
                   disabled={isJoining}
-                  className="w-full bg-gradient-to-r from-primary to-secondary hover:from-primary/80 hover:to-secondary/80"
+                  variant="light-blue"
+                  className="w-full"
                   size="lg"
                 >
                   {isJoining ? 'Joining...' : 'Start Chatting'}
@@ -540,9 +638,8 @@ const Chat = () => {
               </div>
 
               <div className="mt-8 text-center text-sm text-muted-foreground">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>💬 Private messaging</div>
-                  <div>📸 Photo & video sharing</div>
                   <div>🌍 Global chat rooms</div>
                 </div>
               </div>
@@ -614,11 +711,66 @@ const Chat = () => {
           </TabsList>
 
           <TabsContent value="direct" className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-            {/* Direct Chat Sidebar */}
+            {/* Random Chat Controls */}
             <div className="lg:col-span-1 space-y-4">
               <Card>
                 <CardContent className="p-4">
-                  <h3 className="font-semibold mb-4">Your Conversations</h3>
+                  <h3 className="font-semibold mb-4">Random Chat</h3>
+                  <div className="space-y-3">
+                    {!selectedDirectChat && !isSearchingForMatch && (
+                      <Button 
+                        onClick={findRandomUser}
+                        variant="light-blue"
+                        className="w-full gap-2"
+                      >
+                        <MessageCircle className="w-4 h-4" />
+                        Connect to Random User
+                      </Button>
+                    )}
+                    
+                    {isSearchingForMatch && (
+                      <div className="text-center">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-3"></div>
+                        <p className="text-sm text-muted-foreground">Finding someone to chat with...</p>
+                      </div>
+                    )}
+                    
+                    {selectedDirectChat && randomMatch && (
+                      <div className="space-y-2">
+                        <Button 
+                          onClick={skipToNextUser}
+                          variant="outline"
+                          className="w-full gap-2"
+                        >
+                          <SkipForward className="w-4 h-4" />
+                          Next Person
+                        </Button>
+                        <Button 
+                          onClick={leaveRandomChat}
+                          variant="destructive"
+                          size="sm"
+                          className="w-full gap-2"
+                        >
+                          <LogOut className="w-4 h-4" />
+                          Leave Chat
+                        </Button>
+                      </div>
+                    )}
+                    
+                    {reconnectTimeout && (
+                      <div className="text-center p-3 bg-muted rounded-lg">
+                        <p className="text-sm text-muted-foreground">
+                          Finding new person in 10 seconds...
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-4">Previous Conversations</h3>
                   <div className="space-y-2">
                     {directChats.map((chat) => (
                       <button
@@ -638,45 +790,9 @@ const Chat = () => {
                     ))}
                     {directChats.length === 0 && (
                       <p className="text-sm text-muted-foreground text-center py-4">
-                        No conversations yet. Start chatting with someone!
+                        No previous conversations
                       </p>
                     )}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Online Users */}
-              <Card>
-                <CardContent className="p-4">
-                  <h3 className="font-semibold mb-4">Start New Chat</h3>
-                  <Input
-                    placeholder="Search users..."
-                    value={searchUser}
-                    onChange={(e) => setSearchUser(e.target.value)}
-                    className="mb-3"
-                  />
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
-                    {filteredUsers.map((user) => (
-                      <div key={user.id} className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div 
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold"
-                            style={{ backgroundColor: avatarColors[user.username.charCodeAt(0) % avatarColors.length] }}
-                          >
-                            {user.username.charAt(0).toUpperCase()}
-                          </div>
-                          <span className="text-sm">{user.username}</span>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => startDirectChat(user)}
-                          className="h-6 px-2"
-                        >
-                          <UserPlus className="w-3 h-3" />
-                        </Button>
-                      </div>
-                    ))}
                   </div>
                 </CardContent>
               </Card>
@@ -687,8 +803,36 @@ const Chat = () => {
               {selectedDirectChat ? (
                 <Card className="h-[600px] flex flex-col">
                   <div className="p-4 border-b">
-                    <h2 className="font-semibold">{getOtherUserInDirectChat(selectedDirectChat)}</h2>
-                    <p className="text-sm text-muted-foreground">Private conversation</p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="font-semibold">{getOtherUserInDirectChat(selectedDirectChat)}</h2>
+                        <p className="text-sm text-muted-foreground">
+                          {randomMatch ? 'Random conversation' : 'Private conversation'}
+                        </p>
+                      </div>
+                      {randomMatch && (
+                        <div className="flex gap-2">
+                          <Button 
+                            onClick={skipToNextUser}
+                            variant="outline"
+                            size="sm"
+                            className="gap-2"
+                          >
+                            <SkipForward className="w-3 h-3" />
+                            Next
+                          </Button>
+                          <Button 
+                            onClick={leaveRandomChat}
+                            variant="destructive"
+                            size="sm"
+                            className="gap-2"
+                          >
+                            <LogOut className="w-3 h-3" />
+                            Leave
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -738,8 +882,26 @@ const Chat = () => {
                 <Card className="h-[600px] flex items-center justify-center">
                   <div className="text-center text-muted-foreground">
                     <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                    <h3 className="text-lg font-semibold mb-2">Select a conversation</h3>
-                    <p>Choose someone to start chatting with privately</p>
+                    <h3 className="text-lg font-semibold mb-2">Random Anonymous Chat</h3>
+                    <p className="mb-4">Connect with random strangers worldwide</p>
+                    <Button 
+                      onClick={findRandomUser}
+                      variant="light-blue"
+                      disabled={isSearchingForMatch}
+                      className="gap-2"
+                    >
+                      {isSearchingForMatch ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                          Finding someone...
+                        </>
+                      ) : (
+                        <>
+                          <MessageCircle className="w-4 h-4" />
+                          Start Random Chat
+                        </>
+                      )}
+                    </Button>
                   </div>
                 </Card>
               )}
@@ -864,16 +1026,10 @@ const Chat = () => {
                           </div>
                           <span className="text-sm">{participant.username}</span>
                         </div>
-                        {participant.user_id !== currentUser?.id && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => startDirectChat(participant)}
-                            className="h-6 px-2"
-                          >
-                            <MessageCircle className="w-3 h-3" />
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-1">
+                          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                          <span className="text-xs text-muted-foreground">online</span>
+                        </div>
                       </div>
                     ))}
                   </div>
