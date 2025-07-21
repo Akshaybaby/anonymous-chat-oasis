@@ -3,10 +3,13 @@ import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
-import { Send, Users, MessageCircle, Home } from 'lucide-react';
+import { Send, Users, MessageCircle, Home, UserPlus, Search } from 'lucide-react';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
+import { MediaUpload } from '@/components/MediaUpload';
+import { MessageRenderer } from '@/components/MessageRenderer';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 interface CasualUser {
   id: string;
@@ -25,6 +28,27 @@ interface Message {
   content: string;
   username: string;
   created_at: string;
+  message_type?: string;
+  media_url?: string;
+}
+
+interface DirectMessage {
+  id: string;
+  content: string;
+  sender_username: string;
+  created_at: string;
+  message_type?: string;
+  media_url?: string;
+  sender_id: string;
+}
+
+interface DirectChat {
+  id: string;
+  user1_username: string;
+  user2_username: string;
+  user1_id: string;
+  user2_id: string;
+  last_message_at: string;
 }
 
 interface RoomParticipant {
@@ -38,10 +62,16 @@ const Chat = () => {
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<ChatRoom | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
+  const [directChats, setDirectChats] = useState<DirectChat[]>([]);
+  const [selectedDirectChat, setSelectedDirectChat] = useState<DirectChat | null>(null);
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<RoomParticipant[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [username, setUsername] = useState('');
   const [isJoining, setIsJoining] = useState(false);
+  const [activeTab, setActiveTab] = useState('direct');
+  const [searchUser, setSearchUser] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -52,21 +82,28 @@ const Chat = () => {
 
   useEffect(() => {
     loadRooms();
+    loadAllUsers();
   }, []);
 
   useEffect(() => {
-    if (selectedRoom && currentUser) {
-      loadMessages();
-      loadParticipants();
-      joinRoom();
-      subscribeToMessages();
-      subscribeToParticipants();
+    if (currentUser) {
+      loadDirectChats();
+      if (activeTab === 'rooms' && selectedRoom) {
+        loadMessages();
+        loadParticipants();
+        joinRoom();
+        subscribeToMessages();
+        subscribeToParticipants();
+      } else if (activeTab === 'direct' && selectedDirectChat) {
+        loadDirectMessages();
+        subscribeToDirectMessages();
+      }
     }
-  }, [selectedRoom, currentUser]);
+  }, [selectedRoom, selectedDirectChat, currentUser, activeTab]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, directMessages]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -84,9 +121,60 @@ const Chat = () => {
     }
     
     setRooms(data || []);
-    if (data && data.length > 0) {
-      setSelectedRoom(data[0]);
+  };
+
+  const loadAllUsers = async () => {
+    const { data, error } = await supabase
+      .from('casual_users')
+      .select('*')
+      .order('last_active', { ascending: false })
+      .limit(50);
+    
+    if (error) {
+      console.error('Error loading users:', error);
+      return;
     }
+    
+    setOnlineUsers(data?.map(user => ({
+      id: user.id,
+      username: user.username,
+      user_id: user.id
+    })) || []);
+  };
+
+  const loadDirectChats = async () => {
+    if (!currentUser) return;
+
+    const { data, error } = await supabase
+      .from('direct_chats')
+      .select('*')
+      .or(`user1_id.eq.${currentUser.id},user2_id.eq.${currentUser.id}`)
+      .order('last_message_at', { ascending: false });
+
+    if (error) {
+      console.error('Error loading direct chats:', error);
+      return;
+    }
+
+    setDirectChats(data || []);
+  };
+
+  const loadDirectMessages = async () => {
+    if (!selectedDirectChat) return;
+
+    const { data, error } = await supabase
+      .from('direct_messages')
+      .select('*')
+      .eq('chat_id', selectedDirectChat.id)
+      .order('created_at', { ascending: true })
+      .limit(100);
+
+    if (error) {
+      console.error('Error loading direct messages:', error);
+      return;
+    }
+
+    setDirectMessages(data || []);
   };
 
   const createUser = async () => {
@@ -127,6 +215,51 @@ const Chat = () => {
     toast({
       title: "Welcome to StrangerChat!",
       description: `You joined as ${username}`,
+    });
+  };
+
+  const startDirectChat = async (targetUser: RoomParticipant) => {
+    if (!currentUser) return;
+
+    // Check if chat already exists
+    const existingChat = directChats.find(chat => 
+      (chat.user1_id === currentUser.id && chat.user2_id === targetUser.user_id) ||
+      (chat.user1_id === targetUser.user_id && chat.user2_id === currentUser.id)
+    );
+
+    if (existingChat) {
+      setSelectedDirectChat(existingChat);
+      setActiveTab('direct');
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('direct_chats')
+      .insert({
+        user1_id: currentUser.id,
+        user2_id: targetUser.user_id,
+        user1_username: currentUser.username,
+        user2_username: targetUser.username
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating direct chat:', error);
+      toast({
+        title: "Error",
+        description: "Failed to start chat. Please try again.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setDirectChats(prev => [data, ...prev]);
+    setSelectedDirectChat(data);
+    setActiveTab('direct');
+    toast({
+      title: "Chat started",
+      description: `Started conversation with ${targetUser.username}`,
     });
   };
 
@@ -181,28 +314,98 @@ const Chat = () => {
   };
 
   const sendMessage = async () => {
-    if (!newMessage.trim() || !selectedRoom || !currentUser) return;
+    if (!newMessage.trim() || !currentUser) return;
 
-    const { error } = await supabase
-      .from('messages')
-      .insert({
-        room_id: selectedRoom.id,
-        user_id: currentUser.id,
-        username: currentUser.username,
-        content: newMessage.trim()
-      });
+    if (activeTab === 'direct' && selectedDirectChat) {
+      const { error } = await supabase
+        .from('direct_messages')
+        .insert({
+          chat_id: selectedDirectChat.id,
+          sender_id: currentUser.id,
+          sender_username: currentUser.username,
+          content: newMessage.trim()
+        });
 
-    if (error) {
-      console.error('Error sending message:', error);
-      toast({
-        title: "Error",
-        description: "Failed to send message. Please try again.",
-        variant: "destructive"
-      });
-      return;
+      if (error) {
+        console.error('Error sending direct message:', error);
+        toast({
+          title: "Error",
+          description: "Failed to send message. Please try again.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // Update last_message_at
+      await supabase
+        .from('direct_chats')
+        .update({ last_message_at: new Date().toISOString() })
+        .eq('id', selectedDirectChat.id);
+    } else if (activeTab === 'rooms' && selectedRoom) {
+      const { error } = await supabase
+        .from('messages')
+        .insert({
+          room_id: selectedRoom.id,
+          user_id: currentUser.id,
+          username: currentUser.username,
+          content: newMessage.trim()
+        });
+
+      if (error) {
+        console.error('Error sending message:', error);
+        toast({
+          title: "Error",
+          description: "Failed to send message. Please try again.",
+          variant: "destructive"
+        });
+        return;
+      }
     }
 
     setNewMessage('');
+  };
+
+  const sendMediaMessage = async (mediaUrl: string, mediaType: 'image' | 'video') => {
+    if (!currentUser) return;
+
+    if (activeTab === 'direct' && selectedDirectChat) {
+      const { error } = await supabase
+        .from('direct_messages')
+        .insert({
+          chat_id: selectedDirectChat.id,
+          sender_id: currentUser.id,
+          sender_username: currentUser.username,
+          content: '',
+          message_type: mediaType,
+          media_url: mediaUrl
+        });
+
+      if (error) {
+        console.error('Error sending media message:', error);
+        return;
+      }
+
+      await supabase
+        .from('direct_chats')
+        .update({ last_message_at: new Date().toISOString() })
+        .eq('id', selectedDirectChat.id);
+    } else if (activeTab === 'rooms' && selectedRoom) {
+      const { error } = await supabase
+        .from('messages')
+        .insert({
+          room_id: selectedRoom.id,
+          user_id: currentUser.id,
+          username: currentUser.username,
+          content: '',
+          message_type: mediaType,
+          media_url: mediaUrl
+        });
+
+      if (error) {
+        console.error('Error sending media message:', error);
+        return;
+      }
+    }
   };
 
   const subscribeToMessages = () => {
@@ -220,6 +423,30 @@ const Chat = () => {
         },
         (payload) => {
           setMessages(prev => [...prev, payload.new as Message]);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  };
+
+  const subscribeToDirectMessages = () => {
+    if (!selectedDirectChat) return;
+
+    const channel = supabase
+      .channel(`direct-chat-${selectedDirectChat.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'direct_messages',
+          filter: `chat_id=eq.${selectedDirectChat.id}`
+        },
+        (payload) => {
+          setDirectMessages(prev => [...prev, payload.new as DirectMessage]);
         }
       )
       .subscribe();
@@ -253,11 +480,20 @@ const Chat = () => {
     };
   };
 
+  const getOtherUserInDirectChat = (chat: DirectChat) => {
+    if (!currentUser) return '';
+    return chat.user1_id === currentUser.id ? chat.user2_username : chat.user1_username;
+  };
+
+  const filteredUsers = onlineUsers.filter(user => 
+    user.username.toLowerCase().includes(searchUser.toLowerCase()) &&
+    user.user_id !== currentUser?.id
+  );
+
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center p-4">
         <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Login Card */}
           <div className="lg:col-span-2">
             <Card className="p-8">
               <div className="text-center mb-8">
@@ -281,7 +517,7 @@ const Chat = () => {
                   </div>
                 </div>
                 <p className="text-muted-foreground text-lg">
-                  Connect with strangers from around the world. No registration required!
+                  Start private conversations or join group chat rooms. Share photos, videos, and connect instantly!
                 </p>
               </div>
               
@@ -305,15 +541,14 @@ const Chat = () => {
 
               <div className="mt-8 text-center text-sm text-muted-foreground">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div>🌍 Talk worldwide</div>
-                  <div>💬 Share experiences</div>
-                  <div>🎉 Make friends</div>
+                  <div>💬 Private messaging</div>
+                  <div>📸 Photo & video sharing</div>
+                  <div>🌍 Global chat rooms</div>
                 </div>
               </div>
             </Card>
           </div>
 
-          {/* Advertisement Space */}
           <div className="space-y-4">
             <Card className="p-6 bg-gradient-to-br from-orange-100 to-orange-200 dark:from-orange-900/20 dark:to-orange-800/20">
               <div className="text-center">
@@ -321,16 +556,6 @@ const Chat = () => {
                 <div className="mt-4 p-8 bg-white/50 dark:bg-black/20 rounded-lg">
                   <p className="text-sm text-orange-700 dark:text-orange-300">Your Ad Here</p>
                   <p className="text-xs mt-2 text-orange-600 dark:text-orange-400">300x250 Banner</p>
-                </div>
-              </div>
-            </Card>
-
-            <Card className="p-6 bg-gradient-to-br from-green-100 to-green-200 dark:from-green-900/20 dark:to-green-800/20">
-              <div className="text-center">
-                <h3 className="font-semibold text-green-800 dark:text-green-200">Sponsored</h3>
-                <div className="mt-4 p-8 bg-white/50 dark:bg-black/20 rounded-lg">
-                  <p className="text-sm text-green-700 dark:text-green-300">Sponsor Content</p>
-                  <p className="text-xs mt-2 text-green-600 dark:text-green-400">300x250 Banner</p>
                 </div>
               </div>
             </Card>
@@ -342,7 +567,6 @@ const Chat = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <div className="border-b bg-card sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
@@ -376,167 +600,288 @@ const Chat = () => {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto p-4 grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Left Sidebar - Room List */}
-        <div className="lg:col-span-1">
-          <Card>
-            <CardContent className="p-4">
-              <h3 className="font-semibold mb-4 flex items-center gap-2">
-                <MessageCircle className="w-5 h-5" />
-                Chat Rooms
-              </h3>
-              <div className="space-y-2">
-                {rooms.map((room) => (
-                  <button
-                    key={room.id}
-                    onClick={() => setSelectedRoom(room)}
-                    className={`w-full text-left p-3 rounded-lg transition-colors ${
-                      selectedRoom?.id === room.id
-                        ? 'bg-primary text-primary-foreground'
-                        : 'hover:bg-muted'
-                    }`}
-                  >
-                    <div className="font-medium">{room.name}</div>
-                    <div className="text-xs opacity-70">{room.description}</div>
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+      <div className="max-w-7xl mx-auto p-4">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="grid w-full grid-cols-2 max-w-md mx-auto mb-6">
+            <TabsTrigger value="direct" className="gap-2">
+              <MessageCircle className="w-4 h-4" />
+              Private Chats
+            </TabsTrigger>
+            <TabsTrigger value="rooms" className="gap-2">
+              <Users className="w-4 h-4" />
+              Chat Rooms
+            </TabsTrigger>
+          </TabsList>
 
-          {/* Ad Space */}
-          <Card className="mt-4 bg-gradient-to-br from-blue-100 to-blue-200 dark:from-blue-900/20 dark:to-blue-800/20">
-            <CardContent className="p-4">
-              <div className="text-center">
-                <h4 className="font-semibold text-blue-800 dark:text-blue-200">Advertisement</h4>
-                <div className="mt-3 p-6 bg-white/50 dark:bg-black/20 rounded-lg">
-                  <p className="text-sm text-blue-700 dark:text-blue-300">Your Ad Here</p>
-                  <p className="text-xs mt-1 text-blue-600 dark:text-blue-400">250x200</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+          <TabsContent value="direct" className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            {/* Direct Chat Sidebar */}
+            <div className="lg:col-span-1 space-y-4">
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-4">Your Conversations</h3>
+                  <div className="space-y-2">
+                    {directChats.map((chat) => (
+                      <button
+                        key={chat.id}
+                        onClick={() => setSelectedDirectChat(chat)}
+                        className={`w-full text-left p-3 rounded-lg transition-colors ${
+                          selectedDirectChat?.id === chat.id
+                            ? 'bg-primary text-primary-foreground'
+                            : 'hover:bg-muted'
+                        }`}
+                      >
+                        <div className="font-medium">{getOtherUserInDirectChat(chat)}</div>
+                        <div className="text-xs opacity-70">
+                          {new Date(chat.last_message_at).toLocaleString()}
+                        </div>
+                      </button>
+                    ))}
+                    {directChats.length === 0 && (
+                      <p className="text-sm text-muted-foreground text-center py-4">
+                        No conversations yet. Start chatting with someone!
+                      </p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
 
-        {/* Main Chat Area */}
-        <div className="lg:col-span-2">
-          <Card className="h-[600px] flex flex-col">
-            {/* Chat Header */}
-            <div className="p-4 border-b">
-              <div className="flex items-center justify-between">
-                <h2 className="font-semibold">{selectedRoom?.name}</h2>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Users className="w-4 h-4" />
-                  {participants.length} online
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground">{selectedRoom?.description}</p>
+              {/* Online Users */}
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-4">Start New Chat</h3>
+                  <Input
+                    placeholder="Search users..."
+                    value={searchUser}
+                    onChange={(e) => setSearchUser(e.target.value)}
+                    className="mb-3"
+                  />
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {filteredUsers.map((user) => (
+                      <div key={user.id} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div 
+                            className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold"
+                            style={{ backgroundColor: avatarColors[user.username.charCodeAt(0) % avatarColors.length] }}
+                          >
+                            {user.username.charAt(0).toUpperCase()}
+                          </div>
+                          <span className="text-sm">{user.username}</span>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => startDirectChat(user)}
+                          className="h-6 px-2"
+                        >
+                          <UserPlus className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             </div>
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {messages.map((message) => (
-                <div key={message.id} className="flex gap-3">
-                  <div 
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0"
-                    style={{ backgroundColor: avatarColors[message.username.charCodeAt(0) % avatarColors.length] }}
-                  >
-                    {message.username.charAt(0).toUpperCase()}
+            {/* Direct Chat Area */}
+            <div className="lg:col-span-3">
+              {selectedDirectChat ? (
+                <Card className="h-[600px] flex flex-col">
+                  <div className="p-4 border-b">
+                    <h2 className="font-semibold">{getOtherUserInDirectChat(selectedDirectChat)}</h2>
+                    <p className="text-sm text-muted-foreground">Private conversation</p>
                   </div>
-                  <div className="flex-1">
-                    <div className="flex items-baseline gap-2">
-                      <span className="font-medium text-sm">{message.username}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {new Date(message.created_at).toLocaleTimeString()}
-                      </span>
+
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {directMessages.map((message) => (
+                      <div key={message.id} className="flex gap-3">
+                        <div 
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0"
+                          style={{ backgroundColor: avatarColors[message.sender_username.charCodeAt(0) % avatarColors.length] }}
+                        >
+                          {message.sender_username.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-medium text-sm">{message.sender_username}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(message.created_at).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <MessageRenderer 
+                            content={message.content}
+                            messageType={message.message_type || 'text'}
+                            mediaUrl={message.media_url}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    <div ref={messagesEndRef} />
+                  </div>
+
+                  <div className="p-4 border-t">
+                    <div className="flex gap-2">
+                      <MediaUpload onMediaUploaded={sendMediaMessage} />
+                      <Input
+                        placeholder="Type your message..."
+                        value={newMessage}
+                        onChange={(e) => setNewMessage(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                        className="flex-1"
+                      />
+                      <Button onClick={sendMessage} size="icon">
+                        <Send className="w-4 h-4" />
+                      </Button>
                     </div>
-                    <p className="text-sm mt-1">{message.content}</p>
                   </div>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
+                </Card>
+              ) : (
+                <Card className="h-[600px] flex items-center justify-center">
+                  <div className="text-center text-muted-foreground">
+                    <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                    <h3 className="text-lg font-semibold mb-2">Select a conversation</h3>
+                    <p>Choose someone to start chatting with privately</p>
+                  </div>
+                </Card>
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="rooms" className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            {/* Room List */}
+            <div className="lg:col-span-1">
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-4 flex items-center gap-2">
+                    <MessageCircle className="w-5 h-5" />
+                    Chat Rooms
+                  </h3>
+                  <div className="space-y-2">
+                    {rooms.map((room) => (
+                      <button
+                        key={room.id}
+                        onClick={() => setSelectedRoom(room)}
+                        className={`w-full text-left p-3 rounded-lg transition-colors ${
+                          selectedRoom?.id === room.id
+                            ? 'bg-primary text-primary-foreground'
+                            : 'hover:bg-muted'
+                        }`}
+                      >
+                        <div className="font-medium">{room.name}</div>
+                        <div className="text-xs opacity-70">{room.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             </div>
 
-            {/* Message Input */}
-            <div className="p-4 border-t">
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Type your message..."
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                  className="flex-1"
-                />
-                <Button onClick={sendMessage} size="icon">
-                  <Send className="w-4 h-4" />
-                </Button>
-              </div>
-            </div>
-          </Card>
-        </div>
-
-        {/* Right Sidebar - Users & Ads */}
-        <div className="lg:col-span-1 space-y-4">
-          {/* Online Users */}
-          <Card>
-            <CardContent className="p-4">
-              <h3 className="font-semibold mb-4 flex items-center gap-2">
-                <Users className="w-5 h-5" />
-                Online ({participants.length})
-              </h3>
-              <div className="space-y-2">
-                {participants.map((participant) => (
-                  <div key={participant.id} className="flex items-center gap-2">
-                    <div 
-                      className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold"
-                      style={{ backgroundColor: avatarColors[participant.username.charCodeAt(0) % avatarColors.length] }}
-                    >
-                      {participant.username.charAt(0).toUpperCase()}
+            {/* Room Chat Area */}
+            <div className="lg:col-span-2">
+              {selectedRoom ? (
+                <Card className="h-[600px] flex flex-col">
+                  <div className="p-4 border-b">
+                    <div className="flex items-center justify-between">
+                      <h2 className="font-semibold">{selectedRoom?.name}</h2>
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Users className="w-4 h-4" />
+                        {participants.length} online
+                      </div>
                     </div>
-                    <span className="text-sm">{participant.username}</span>
+                    <p className="text-sm text-muted-foreground">{selectedRoom?.description}</p>
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
 
-          {/* Ad Spaces */}
-          <Card className="bg-gradient-to-br from-purple-100 to-purple-200 dark:from-purple-900/20 dark:to-purple-800/20">
-            <CardContent className="p-4">
-              <div className="text-center">
-                <h4 className="font-semibold text-purple-800 dark:text-purple-200">Sponsored</h4>
-                <div className="mt-3 p-6 bg-white/50 dark:bg-black/20 rounded-lg">
-                  <p className="text-sm text-purple-700 dark:text-purple-300">Ad Space</p>
-                  <p className="text-xs mt-1 text-purple-600 dark:text-purple-400">250x150</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {messages.map((message) => (
+                      <div key={message.id} className="flex gap-3">
+                        <div 
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0"
+                          style={{ backgroundColor: avatarColors[message.username.charCodeAt(0) % avatarColors.length] }}
+                        >
+                          {message.username.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-medium text-sm">{message.username}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(message.created_at).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <MessageRenderer 
+                            content={message.content}
+                            messageType={message.message_type || 'text'}
+                            mediaUrl={message.media_url}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    <div ref={messagesEndRef} />
+                  </div>
 
-          <Card className="bg-gradient-to-br from-red-100 to-red-200 dark:from-red-900/20 dark:to-red-800/20">
-            <CardContent className="p-4">
-              <div className="text-center">
-                <h4 className="font-semibold text-red-800 dark:text-red-200">Advertisement</h4>
-                <div className="mt-3 p-6 bg-white/50 dark:bg-black/20 rounded-lg">
-                  <p className="text-sm text-red-700 dark:text-red-300">Banner Ad</p>
-                  <p className="text-xs mt-1 text-red-600 dark:text-red-400">250x150</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+                  <div className="p-4 border-t">
+                    <div className="flex gap-2">
+                      <MediaUpload onMediaUploaded={sendMediaMessage} />
+                      <Input
+                        placeholder="Type your message..."
+                        value={newMessage}
+                        onChange={(e) => setNewMessage(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                        className="flex-1"
+                      />
+                      <Button onClick={sendMessage} size="icon">
+                        <Send className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+              ) : (
+                <Card className="h-[600px] flex items-center justify-center">
+                  <div className="text-center text-muted-foreground">
+                    <Users className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                    <h3 className="text-lg font-semibold mb-2">Select a chat room</h3>
+                    <p>Choose a room to join the conversation</p>
+                  </div>
+                </Card>
+              )}
+            </div>
 
-          <Card className="bg-gradient-to-br from-yellow-100 to-yellow-200 dark:from-yellow-900/20 dark:to-yellow-800/20">
-            <CardContent className="p-4">
-              <div className="text-center">
-                <h4 className="font-semibold text-yellow-800 dark:text-yellow-200">Promoted</h4>
-                <div className="mt-3 p-6 bg-white/50 dark:bg-black/20 rounded-lg">
-                  <p className="text-sm text-yellow-700 dark:text-yellow-300">Content Ad</p>
-                  <p className="text-xs mt-1 text-yellow-600 dark:text-yellow-400">250x150</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+            {/* Room Participants */}
+            <div className="lg:col-span-1">
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-4 flex items-center gap-2">
+                    <Users className="w-5 h-5" />
+                    Online ({participants.length})
+                  </h3>
+                  <div className="space-y-2">
+                    {participants.map((participant) => (
+                      <div key={participant.id} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div 
+                            className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold"
+                            style={{ backgroundColor: avatarColors[participant.username.charCodeAt(0) % avatarColors.length] }}
+                          >
+                            {participant.username.charAt(0).toUpperCase()}
+                          </div>
+                          <span className="text-sm">{participant.username}</span>
+                        </div>
+                        {participant.user_id !== currentUser?.id && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => startDirectChat(participant)}
+                            className="h-6 px-2"
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

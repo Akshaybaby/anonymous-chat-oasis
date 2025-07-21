@@ -39,22 +39,28 @@ const Index = () => {
         {/* Hero Section */}
         <div className="text-center mb-16">
           <h2 className="text-6xl md:text-7xl font-bold mb-6 tracking-tight">
-            Talk to <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">Strangers</span>
+            Chat <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">Anonymously</span>
           </h2>
           <div className="mb-4">
             <span className="text-2xl md:text-3xl font-semibold bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent">
               StrangerChat
             </span>
-            <span className="text-lg text-muted-foreground ml-2">- Where conversations begin</span>
+            <span className="text-lg text-muted-foreground ml-2">- Anonymous chatting with real people & AI</span>
           </div>
           <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-            Connect with people from around the world. No registration required - just pick a username and start chatting!
+            Start private one-to-one conversations or join group chat rooms. Share photos, videos, and connect instantly with strangers worldwide!
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-6">
             <Link to="/chat">
               <Button size="lg" className="text-lg px-8 py-6 gap-3 bg-gradient-to-r from-primary to-secondary hover:from-primary/80 hover:to-secondary/80">
                 <MessageCircle className="w-6 h-6" />
-                Join Free Chat Rooms
+                Start Private Chat
+              </Button>
+            </Link>
+            <Link to="/chat">
+              <Button variant="outline" size="lg" className="text-lg px-8 py-6 gap-3">
+                <Users className="w-6 h-6" />
+                Join Chat Rooms
               </Button>
             </Link>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">

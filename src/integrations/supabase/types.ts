@@ -65,11 +65,84 @@ export type Database = {
         }
         Relationships: []
       }
+      direct_chats: {
+        Row: {
+          created_at: string
+          id: string
+          last_message_at: string
+          user1_id: string
+          user1_username: string
+          user2_id: string
+          user2_username: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          last_message_at?: string
+          user1_id: string
+          user1_username: string
+          user2_id: string
+          user2_username: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          last_message_at?: string
+          user1_id?: string
+          user1_username?: string
+          user2_id?: string
+          user2_username?: string
+        }
+        Relationships: []
+      }
+      direct_messages: {
+        Row: {
+          chat_id: string
+          content: string
+          created_at: string
+          id: string
+          media_url: string | null
+          message_type: string
+          sender_id: string
+          sender_username: string
+        }
+        Insert: {
+          chat_id: string
+          content: string
+          created_at?: string
+          id?: string
+          media_url?: string | null
+          message_type?: string
+          sender_id: string
+          sender_username: string
+        }
+        Update: {
+          chat_id?: string
+          content?: string
+          created_at?: string
+          id?: string
+          media_url?: string | null
+          message_type?: string
+          sender_id?: string
+          sender_username?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "direct_messages_chat_id_fkey"
+            columns: ["chat_id"]
+            isOneToOne: false
+            referencedRelation: "direct_chats"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       messages: {
         Row: {
           content: string
           created_at: string
           id: string
+          media_url: string | null
+          message_type: string | null
           room_id: string
           user_id: string
           username: string
@@ -78,6 +151,8 @@ export type Database = {
           content: string
           created_at?: string
           id?: string
+          media_url?: string | null
+          message_type?: string | null
           room_id: string
           user_id: string
           username: string
@@ -86,6 +161,8 @@ export type Database = {
           content?: string
           created_at?: string
           id?: string
+          media_url?: string | null
+          message_type?: string | null
           room_id?: string
           user_id?: string
           username?: string
