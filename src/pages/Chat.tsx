@@ -3,7 +3,9 @@ import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
-import { Send, Users, MessageCircle } from 'lucide-react';
+import { Send, Users, MessageCircle, Home } from 'lucide-react';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
+import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 
 interface CasualUser {
@@ -259,9 +261,25 @@ const Chat = () => {
           <div className="lg:col-span-2">
             <Card className="p-8">
               <div className="text-center mb-8">
-                <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-                  StrangerChat
-                </h1>
+                <div className="mb-6">
+                  <h1 className="text-5xl font-bold tracking-tight mb-2">
+                    <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent animate-pulse">
+                      Stranger
+                    </span>
+                    <span className="bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent ml-1">
+                      Chat
+                    </span>
+                  </h1>
+                  <div className="flex items-center justify-center gap-4 mb-4">
+                    <Link to="/">
+                      <Button variant="outline" size="sm" className="gap-2">
+                        <Home className="w-4 h-4" />
+                        Home
+                      </Button>
+                    </Link>
+                    <ThemeToggle />
+                  </div>
+                </div>
                 <p className="text-muted-foreground text-lg">
                   Connect with strangers from around the world. No registration required!
                 </p>
@@ -278,7 +296,7 @@ const Chat = () => {
                 <Button 
                   onClick={createUser} 
                   disabled={isJoining}
-                  className="w-full"
+                  className="w-full bg-gradient-to-r from-primary to-secondary hover:from-primary/80 hover:to-secondary/80"
                   size="lg"
                 >
                   {isJoining ? 'Joining...' : 'Start Chatting'}
@@ -286,9 +304,11 @@ const Chat = () => {
               </div>
 
               <div className="mt-8 text-center text-sm text-muted-foreground">
-                <p>🌍 Talk to people worldwide</p>
-                <p>💬 Share knowledge and experiences</p>
-                <p>🎉 Have fun and make new friends</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>🌍 Talk worldwide</div>
+                  <div>💬 Share experiences</div>
+                  <div>🎉 Make friends</div>
+                </div>
               </div>
             </Card>
           </div>
@@ -323,11 +343,18 @@ const Chat = () => {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <div className="border-b bg-card">
+      <div className="border-b bg-card sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-            StrangerChat
-          </h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-3xl font-bold tracking-tight">
+              <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
+                Stranger
+              </span>
+              <span className="bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent ml-1">
+                Chat
+              </span>
+            </h1>
+          </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <div 
@@ -338,6 +365,13 @@ const Chat = () => {
               </div>
               <span className="font-medium">{currentUser.username}</span>
             </div>
+            <ThemeToggle />
+            <Link to="/">
+              <Button variant="outline" size="sm" className="gap-2">
+                <Home className="w-4 h-4" />
+                Home
+              </Button>
+            </Link>
           </div>
         </div>
       </div>

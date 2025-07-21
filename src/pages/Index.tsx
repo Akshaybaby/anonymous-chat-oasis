@@ -1,41 +1,67 @@
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { MessageCircle, Users, Globe, Heart, Shield, Zap } from 'lucide-react';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { Link } from 'react-router-dom';
 
 const Index = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/5 to-secondary/5">
       {/* Header */}
-      <header className="border-b bg-card/50 backdrop-blur-sm">
+      <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-            StrangerChat
-          </h1>
-          <Link to="/chat">
-            <Button size="lg" className="gap-2">
-              <MessageCircle className="w-5 h-5" />
-              Start Chatting
-            </Button>
-          </Link>
+          <div className="flex items-center gap-4">
+            <h1 className="text-4xl font-bold tracking-tight">
+              <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent animate-pulse">
+                Stranger
+              </span>
+              <span className="bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent ml-1">
+                Chat
+              </span>
+            </h1>
+            <div className="hidden sm:block text-xs bg-gradient-to-r from-primary/20 to-secondary/20 px-3 py-1 rounded-full border">
+              🌍 Connect Worldwide
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <ThemeToggle />
+            <Link to="/chat">
+              <Button size="lg" className="gap-2 bg-gradient-to-r from-primary to-secondary hover:from-primary/80 hover:to-secondary/80">
+                <MessageCircle className="w-5 h-5" />
+                Start Chatting
+              </Button>
+            </Link>
+          </div>
         </div>
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-12">
         {/* Hero Section */}
         <div className="text-center mb-16">
-          <h2 className="text-5xl md:text-6xl font-bold mb-6">
-            Talk to <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Strangers</span>
+          <h2 className="text-6xl md:text-7xl font-bold mb-6 tracking-tight">
+            Talk to <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">Strangers</span>
           </h2>
+          <div className="mb-4">
+            <span className="text-2xl md:text-3xl font-semibold bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent">
+              StrangerChat
+            </span>
+            <span className="text-lg text-muted-foreground ml-2">- Where conversations begin</span>
+          </div>
           <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
             Connect with people from around the world. No registration required - just pick a username and start chatting!
           </p>
-          <Link to="/chat">
-            <Button size="lg" className="text-lg px-8 py-6 gap-3">
-              <MessageCircle className="w-6 h-6" />
-              Join Free Chat Rooms
-            </Button>
-          </Link>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-6">
+            <Link to="/chat">
+              <Button size="lg" className="text-lg px-8 py-6 gap-3 bg-gradient-to-r from-primary to-secondary hover:from-primary/80 hover:to-secondary/80">
+                <MessageCircle className="w-6 h-6" />
+                Join Free Chat Rooms
+              </Button>
+            </Link>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+              <span>1000+ people online now</span>
+            </div>
+          </div>
         </div>
 
         {/* Features Grid */}
