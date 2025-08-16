@@ -1,9 +1,7 @@
 # wrangler.toml
+name = "anonymous-chat-oasis"
+compatibility_date = "2025-08-16"
 
-# Tell Cloudflare where to find the build output
-pages_build_output_dir = "dist"
-
-# Optional: force npm instead of bun
 [build]
-command = "npm install && npm run build"
-cwd = "."
+command = "npm run build"
+pages_build_output_dir = "dist"
