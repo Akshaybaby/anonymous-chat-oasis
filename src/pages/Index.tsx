@@ -45,7 +45,7 @@ const Index = () => {
             <span className="text-2xl md:text-3xl font-semibold bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent">
               StrangerChat
             </span>
-            <span className="text-lg text-muted-foreground ml-2">- Anonymous chatting with real people & AI</span>
+            <span className="text-lg text-muted-foreground ml-2">- Anonymous chatting with real people</span>
           </div>
           <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
             Start private one-to-one conversations or join group chat rooms. Connect instantly with strangers worldwide!
