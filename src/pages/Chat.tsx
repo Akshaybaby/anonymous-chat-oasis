@@ -88,10 +88,48 @@ const Chat = () => {
   }, []);
 
   useEffect(() => {
+    let handleBeforeUnload: ((e: BeforeUnloadEvent) => void) | null = null;
+    let handleUnload: (() => void) | null = null; 
+    let handleVisibilityChange: (() => void) | null = null;
+    
     if (currentUser) {
       initializePresence();
       setUserStatusOnline();
       startAutoMatching();
+      
+      // Add event listeners for detecting when user leaves the site
+      handleBeforeUnload = (e: BeforeUnloadEvent) => {
+        // Immediately set user status to offline
+        setUserStatusOffline();
+        
+        // Optional: Show warning if user is in active chat
+        if (currentDirectChat || selectedRoom) {
+          e.preventDefault();
+          return e.returnValue = 'Are you sure you want to leave? Your chat will be disconnected.';
+        }
+      };
+
+      handleUnload = () => {
+        // Final cleanup when page unloads
+        setUserStatusOffline();
+        cleanupPresence();
+      };
+
+      handleVisibilityChange = () => {
+        if (document.hidden) {
+          // User switched to another tab or minimized browser
+          setUserStatusOffline();
+        } else {
+          // User came back to the tab
+          setUserStatusOnline();
+        }
+      };
+
+      // Add all event listeners
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      window.addEventListener('unload', handleUnload);
+      window.addEventListener('pagehide', handleUnload);
+      document.addEventListener('visibilitychange', handleVisibilityChange);
     }
     
     return () => {
@@ -99,8 +137,20 @@ const Chat = () => {
         setUserStatusOffline();
         cleanupPresence();
       }
+      
+      // Clean up event listeners
+      if (handleBeforeUnload) {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+      }
+      if (handleUnload) {
+        window.removeEventListener('unload', handleUnload);
+        window.removeEventListener('pagehide', handleUnload);
+      }
+      if (handleVisibilityChange) {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
     };
-  }, [currentUser]);
+  }, [currentUser, currentDirectChat, selectedRoom]);
 
   useEffect(() => {
     if (currentUser) {
