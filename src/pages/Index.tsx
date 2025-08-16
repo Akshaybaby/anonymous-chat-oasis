@@ -63,10 +63,6 @@ const Index = () => {
                 Join Chat Rooms
               </Button>
             </Link>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-              <span>1000+ people online now</span>
-            </div>
           </div>
         </div>
 

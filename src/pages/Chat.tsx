@@ -186,10 +186,6 @@ const Chat = () => {
 
     setCurrentUser(data);
     setIsJoining(false);
-    toast({
-      title: "Welcome to StrangerChat!",
-      description: `You joined as ${username}`,
-    });
   };
 
   const startDirectChat = async (targetUser: RoomParticipant) => {
@@ -229,8 +225,21 @@ const Chat = () => {
   const loadMessages = async () => {
     if (!selectedRoom) return;
 
-    // Clear previous messages
-    setMessages([]);
+    // Load only the last 10 messages for new users
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('room_id', selectedRoom.id)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (error) {
+      console.error('Error loading messages:', error);
+      return;
+    }
+
+    // Reverse to show messages in chronological order
+    setMessages(data?.reverse() || []);
   };
 
   const loadParticipants = async () => {
@@ -530,73 +539,59 @@ const Chat = () => {
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center p-4">
-        <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2">
-            <Card className="p-8">
-              <div className="text-center mb-8">
-                <div className="mb-6">
-                  <h1 className="text-5xl font-bold tracking-tight mb-2">
-                    <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent animate-pulse">
-                      Stranger
-                    </span>
-                    <span className="bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent ml-1">
-                      Chat
-                    </span>
-                  </h1>
-                  <div className="flex items-center justify-center gap-4 mb-4">
-                    <Link to="/">
-                      <Button variant="outline" size="sm" className="gap-2">
-                        <Home className="w-4 h-4" />
-                        Home
-                      </Button>
-                    </Link>
-                    <ThemeToggle />
-                  </div>
+        <div className="w-full max-w-4xl">
+          <Card className="p-4 sm:p-8 max-w-md mx-auto">
+            <div className="text-center mb-8">
+              <div className="mb-6">
+                <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2">
+                  <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent animate-pulse">
+                    Stranger
+                  </span>
+                  <span className="bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent ml-1">
+                    Chat
+                  </span>
+                </h1>
+                <div className="flex items-center justify-center gap-4 mb-4">
+                  <Link to="/">
+                    <Button variant="outline" size="sm" className="gap-2">
+                      <Home className="w-4 h-4" />
+                      Home
+                    </Button>
+                  </Link>
+                  <ThemeToggle />
                 </div>
-                <p className="text-muted-foreground text-lg">
-                  Start private conversations or join group chat rooms. Connect instantly with strangers worldwide!
-                </p>
               </div>
-              
-              <div className="space-y-4 max-w-md mx-auto">
-                <Input
-                  placeholder="Enter your username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && createUser()}
-                  className="text-center"
-                />
-                <Button 
-                  onClick={createUser} 
-                  disabled={isJoining}
-                  variant="light-blue"
-                  className="w-full"
-                  size="lg"
-                >
-                  {isJoining ? 'Joining...' : 'Start Chatting'}
-                </Button>
-              </div>
+              <p className="text-muted-foreground text-base">
+                Start private conversations or join group chat rooms. Connect instantly with strangers worldwide!
+              </p>
+            </div>
+            
+            <div className="space-y-4">
+              <Input
+                placeholder="Enter your username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && createUser()}
+                className="text-center"
+              />
+              <Button 
+                onClick={createUser} 
+                disabled={isJoining}
+                variant="light-blue"
+                className="w-full"
+                size="lg"
+              >
+                {isJoining ? 'Joining...' : 'Start Chatting'}
+              </Button>
+            </div>
 
-              <div className="mt-8 text-center text-sm text-muted-foreground">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>💬 Private messaging</div>
-                  <div>🌍 Global chat rooms</div>
-                </div>
+            <div className="mt-8 text-center text-sm text-muted-foreground">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>💬 Private messaging</div>
+                <div>🌍 Global chat rooms</div>
               </div>
-            </Card>
-          </div>
-
-          <div className="space-y-4">
-            <Card className="p-6 bg-gradient-to-br from-orange-100 to-orange-200 dark:from-orange-900/20 dark:to-orange-800/20">
-              <div className="text-center">
-                <h3 className="font-semibold text-orange-800 dark:text-orange-200">Advertisement</h3>
-                <div className="mt-4 p-8 bg-white/50 dark:bg-black/20 rounded-lg">
-                  <p className="text-sm text-orange-700 dark:text-orange-300">Your Ad Here</p>
-                  <p className="text-xs mt-2 text-orange-600 dark:text-orange-400">300x250 Banner</p>
-                </div>
-              </div>
-            </Card>
-          </div>
+            </div>
+          </Card>
         </div>
       </div>
     );
@@ -605,9 +600,9 @@ const Chat = () => {
   return (
     <div className="min-h-screen bg-background">
       <div className="border-b bg-card sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+        <div className="max-w-7xl mx-auto px-2 sm:px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
-            <h1 className="text-3xl font-bold tracking-tight">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
               <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
                 Stranger
               </span>
@@ -616,30 +611,30 @@ const Chat = () => {
               </span>
             </h1>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             <div className="flex items-center gap-2">
               <div 
-                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold"
+                className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-white text-xs sm:text-sm font-semibold"
                 style={{ backgroundColor: currentUser.avatar_color }}
               >
                 {currentUser.username.charAt(0).toUpperCase()}
               </div>
-              <span className="font-medium">{currentUser.username}</span>
+              <span className="font-medium text-sm sm:text-base">{currentUser.username}</span>
             </div>
             <ThemeToggle />
             <Link to="/">
               <Button variant="outline" size="sm" className="gap-2">
                 <Home className="w-4 h-4" />
-                Home
+                <span className="hidden sm:inline">Home</span>
               </Button>
             </Link>
           </div>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto p-4">
+      <div className="max-w-7xl mx-auto p-2 sm:p-4">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-2 max-w-md mx-auto mb-6">
+          <TabsList className="grid w-full grid-cols-2 max-w-md mx-auto mb-4 sm:mb-6">
             <TabsTrigger value="direct" className="gap-2">
               <MessageCircle className="w-4 h-4" />
               Private Chats
@@ -650,7 +645,7 @@ const Chat = () => {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="direct" className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <TabsContent value="direct" className="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6">
             {/* Random Chat Controls */}
             <div className="lg:col-span-1 space-y-4">
               <Card>
@@ -716,7 +711,7 @@ const Chat = () => {
             {/* Direct Chat Area */}
             <div className="lg:col-span-3">
               {currentDirectChat ? (
-                <Card className="h-[600px] flex flex-col">
+                <Card className="h-[500px] sm:h-[600px] flex flex-col">
                   <div className="p-4 border-b">
                     <div className="flex items-center justify-between">
                       <div>
@@ -794,7 +789,7 @@ const Chat = () => {
                   </div>
                 </Card>
               ) : (
-                <Card className="h-[600px] flex items-center justify-center">
+                <Card className="h-[500px] sm:h-[600px] flex items-center justify-center">
                   <div className="text-center text-muted-foreground">
                     <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-50" />
                     <h3 className="text-lg font-semibold mb-2">Random Anonymous Chat</h3>
@@ -823,7 +818,7 @@ const Chat = () => {
             </div>
           </TabsContent>
 
-          <TabsContent value="rooms" className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <TabsContent value="rooms" className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
             {/* Room List */}
             <div className="lg:col-span-1">
               <Card>
@@ -853,18 +848,14 @@ const Chat = () => {
             </div>
 
             {/* Room Chat Area */}
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-1">
               {selectedRoom ? (
-                <Card className="h-[600px] flex flex-col">
+                <Card className="h-[500px] sm:h-[600px] flex flex-col">
                   <div className="p-4 border-b">
                     <div className="flex items-center justify-between">
                       <div>
                         <h2 className="font-semibold text-xl">Room: {selectedRoom?.name}</h2>
                         <p className="text-sm text-muted-foreground">{selectedRoom?.description}</p>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Users className="w-4 h-4" />
-                        {participants.length} people online
                       </div>
                     </div>
                   </div>
@@ -913,7 +904,7 @@ const Chat = () => {
                   </div>
                 </Card>
               ) : (
-                <Card className="h-[600px] flex items-center justify-center">
+                <Card className="h-[500px] sm:h-[600px] flex items-center justify-center">
                   <div className="text-center text-muted-foreground">
                     <Users className="w-16 h-16 mx-auto mb-4 opacity-50" />
                     <h3 className="text-lg font-semibold mb-2">Select a chat room</h3>
@@ -923,36 +914,6 @@ const Chat = () => {
               )}
             </div>
 
-            {/* Room Participants */}
-            <div className="lg:col-span-1">
-              <Card>
-                <CardContent className="p-4">
-                  <h3 className="font-semibold mb-4 flex items-center gap-2">
-                    <Users className="w-5 h-5" />
-                    Online ({participants.length})
-                  </h3>
-                  <div className="space-y-2">
-                    {participants.map((participant) => (
-                      <div key={participant.id} className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div 
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold"
-                            style={{ backgroundColor: avatarColors[participant.username.charCodeAt(0) % avatarColors.length] }}
-                          >
-                            {participant.username.charAt(0).toUpperCase()}
-                          </div>
-                          <span className="text-sm">{participant.username}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                          <span className="text-xs text-muted-foreground">online</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
           </TabsContent>
         </Tabs>
       </div>
