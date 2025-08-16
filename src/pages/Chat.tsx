@@ -63,8 +63,8 @@ const Chat = () => {
   const [selectedRoom, setSelectedRoom] = useState<ChatRoom | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
-  const [directChats, setDirectChats] = useState<DirectChat[]>([]);
-  const [selectedDirectChat, setSelectedDirectChat] = useState<DirectChat | null>(null);
+  const [currentDirectChat, setCurrentDirectChat] = useState<DirectChat | null>(null);
+  const [currentChatPartner, setCurrentChatPartner] = useState<string>('');
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<RoomParticipant[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -89,19 +89,18 @@ const Chat = () => {
 
   useEffect(() => {
     if (currentUser) {
-      loadDirectChats();
       if (activeTab === 'rooms' && selectedRoom) {
         loadMessages();
         loadParticipants();
         joinRoom();
         subscribeToMessages();
         subscribeToParticipants();
-      } else if (activeTab === 'direct' && selectedDirectChat) {
+      } else if (activeTab === 'direct' && currentDirectChat) {
         loadDirectMessages();
         subscribeToDirectMessages();
       }
     }
-  }, [selectedRoom, selectedDirectChat, currentUser, activeTab]);
+  }, [selectedRoom, currentDirectChat, currentUser, activeTab]);
 
   useEffect(() => {
     scrollToBottom();
@@ -144,39 +143,12 @@ const Chat = () => {
     })) || []);
   };
 
-  const loadDirectChats = async () => {
-    if (!currentUser) return;
-
-    const { data, error } = await supabase
-      .from('direct_chats')
-      .select('*')
-      .or(`user1_id.eq.${currentUser.id},user2_id.eq.${currentUser.id}`)
-      .order('last_message_at', { ascending: false });
-
-    if (error) {
-      console.error('Error loading direct chats:', error);
-      return;
-    }
-
-    setDirectChats(data || []);
-  };
 
   const loadDirectMessages = async () => {
-    if (!selectedDirectChat) return;
+    if (!currentDirectChat) return;
 
-    const { data, error } = await supabase
-      .from('direct_messages')
-      .select('*')
-      .eq('chat_id', selectedDirectChat.id)
-      .order('created_at', { ascending: true })
-      .limit(100);
-
-    if (error) {
-      console.error('Error loading direct messages:', error);
-      return;
-    }
-
-    setDirectMessages(data || []);
+    // Clear previous messages
+    setDirectMessages([]);
   };
 
   const createUser = async () => {
@@ -223,18 +195,6 @@ const Chat = () => {
   const startDirectChat = async (targetUser: RoomParticipant) => {
     if (!currentUser) return;
 
-    // Check if chat already exists
-    const existingChat = directChats.find(chat => 
-      (chat.user1_id === currentUser.id && chat.user2_id === targetUser.user_id) ||
-      (chat.user1_id === targetUser.user_id && chat.user2_id === currentUser.id)
-    );
-
-    if (existingChat) {
-      setSelectedDirectChat(existingChat);
-      setActiveTab('direct');
-      return;
-    }
-
     const { data, error } = await supabase
       .from('direct_chats')
       .insert({
@@ -256,9 +216,10 @@ const Chat = () => {
       return;
     }
 
-    setDirectChats(prev => [data, ...prev]);
-    setSelectedDirectChat(data);
+    setCurrentDirectChat(data);
+    setCurrentChatPartner(targetUser.username);
     setActiveTab('direct');
+    setDirectMessages([]);
     toast({
       title: "Chat started",
       description: `Started conversation with ${targetUser.username}`,
@@ -268,19 +229,8 @@ const Chat = () => {
   const loadMessages = async () => {
     if (!selectedRoom) return;
 
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('room_id', selectedRoom.id)
-      .order('created_at', { ascending: true })
-      .limit(100);
-
-    if (error) {
-      console.error('Error loading messages:', error);
-      return;
-    }
-
-    setMessages(data || []);
+    // Clear previous messages
+    setMessages([]);
   };
 
   const loadParticipants = async () => {
@@ -318,11 +268,11 @@ const Chat = () => {
   const sendMessage = async () => {
     if (!newMessage.trim() || !currentUser) return;
 
-    if (activeTab === 'direct' && selectedDirectChat) {
+    if (activeTab === 'direct' && currentDirectChat) {
       const { error } = await supabase
         .from('direct_messages')
         .insert({
-          chat_id: selectedDirectChat.id,
+          chat_id: currentDirectChat.id,
           sender_id: currentUser.id,
           sender_username: currentUser.username,
           content: newMessage.trim()
@@ -342,7 +292,7 @@ const Chat = () => {
       await supabase
         .from('direct_chats')
         .update({ last_message_at: new Date().toISOString() })
-        .eq('id', selectedDirectChat.id);
+        .eq('id', currentDirectChat.id);
     } else if (activeTab === 'rooms' && selectedRoom) {
       const { error } = await supabase
         .from('messages')
@@ -370,11 +320,11 @@ const Chat = () => {
   const sendMediaMessage = async (mediaUrl: string, mediaType: 'image' | 'video') => {
     if (!currentUser) return;
 
-    if (activeTab === 'direct' && selectedDirectChat) {
+    if (activeTab === 'direct' && currentDirectChat) {
       const { error } = await supabase
         .from('direct_messages')
         .insert({
-          chat_id: selectedDirectChat.id,
+          chat_id: currentDirectChat.id,
           sender_id: currentUser.id,
           sender_username: currentUser.username,
           content: '',
@@ -390,7 +340,7 @@ const Chat = () => {
       await supabase
         .from('direct_chats')
         .update({ last_message_at: new Date().toISOString() })
-        .eq('id', selectedDirectChat.id);
+        .eq('id', currentDirectChat.id);
     } else if (activeTab === 'rooms' && selectedRoom) {
       const { error } = await supabase
         .from('messages')
@@ -435,17 +385,17 @@ const Chat = () => {
   };
 
   const subscribeToDirectMessages = () => {
-    if (!selectedDirectChat) return;
+    if (!currentDirectChat) return;
 
     const channel = supabase
-      .channel(`direct-chat-${selectedDirectChat.id}`)
+      .channel(`direct-chat-${currentDirectChat.id}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'direct_messages',
-          filter: `chat_id=eq.${selectedDirectChat.id}`
+          filter: `chat_id=eq.${currentDirectChat.id}`
         },
         (payload) => {
           setDirectMessages(prev => [...prev, payload.new as DirectMessage]);
@@ -482,9 +432,8 @@ const Chat = () => {
     };
   };
 
-  const getOtherUserInDirectChat = (chat: DirectChat) => {
-    if (!currentUser) return '';
-    return chat.user1_id === currentUser.id ? chat.user2_username : chat.user1_username;
+  const getCurrentChatPartner = () => {
+    return currentChatPartner || (randomMatch ? randomMatch.username : '');
   };
 
   // Random user connection functions
@@ -533,18 +482,6 @@ const Chat = () => {
   const startRandomDirectChat = async (targetUser: CasualUser) => {
     if (!currentUser) return;
 
-    // Check if chat already exists
-    const existingChat = directChats.find(chat => 
-      (chat.user1_id === currentUser.id && chat.user2_id === targetUser.id) ||
-      (chat.user1_id === targetUser.id && chat.user2_id === currentUser.id)
-    );
-
-    if (existingChat) {
-      setSelectedDirectChat(existingChat);
-      setActiveTab('direct');
-      return;
-    }
-
     const { data, error } = await supabase
       .from('direct_chats')
       .insert({
@@ -561,14 +498,17 @@ const Chat = () => {
       return;
     }
 
-    setDirectChats(prev => [data, ...prev]);
-    setSelectedDirectChat(data);
+    setCurrentDirectChat(data);
+    setCurrentChatPartner(targetUser.username);
     setActiveTab('direct');
+    setDirectMessages([]);
   };
 
   const leaveRandomChat = () => {
-    setSelectedDirectChat(null);
+    setCurrentDirectChat(null);
+    setCurrentChatPartner('');
     setRandomMatch(null);
+    setDirectMessages([]);
     
     // Set timeout to find new user after 10 seconds
     const timeout = setTimeout(() => {
@@ -717,7 +657,7 @@ const Chat = () => {
                 <CardContent className="p-4">
                   <h3 className="font-semibold mb-4">Random Chat</h3>
                   <div className="space-y-3">
-                    {!selectedDirectChat && !isSearchingForMatch && (
+                    {!currentDirectChat && !isSearchingForMatch && (
                       <Button 
                         onClick={findRandomUser}
                         variant="light-blue"
@@ -735,8 +675,12 @@ const Chat = () => {
                       </div>
                     )}
                     
-                    {selectedDirectChat && randomMatch && (
+                    {currentDirectChat && randomMatch && (
                       <div className="space-y-2">
+                        <div className="p-3 bg-muted rounded-lg">
+                          <p className="text-sm font-medium">Chatting with:</p>
+                          <p className="text-lg font-semibold text-primary">{getCurrentChatPartner()}</p>
+                        </div>
                         <Button 
                           onClick={skipToNextUser}
                           variant="outline"
@@ -767,45 +711,16 @@ const Chat = () => {
                   </div>
                 </CardContent>
               </Card>
-
-              <Card>
-                <CardContent className="p-4">
-                  <h3 className="font-semibold mb-4">Previous Conversations</h3>
-                  <div className="space-y-2">
-                    {directChats.map((chat) => (
-                      <button
-                        key={chat.id}
-                        onClick={() => setSelectedDirectChat(chat)}
-                        className={`w-full text-left p-3 rounded-lg transition-colors ${
-                          selectedDirectChat?.id === chat.id
-                            ? 'bg-primary text-primary-foreground'
-                            : 'hover:bg-muted'
-                        }`}
-                      >
-                        <div className="font-medium">{getOtherUserInDirectChat(chat)}</div>
-                        <div className="text-xs opacity-70">
-                          {new Date(chat.last_message_at).toLocaleString()}
-                        </div>
-                      </button>
-                    ))}
-                    {directChats.length === 0 && (
-                      <p className="text-sm text-muted-foreground text-center py-4">
-                        No previous conversations
-                      </p>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
             </div>
 
             {/* Direct Chat Area */}
             <div className="lg:col-span-3">
-              {selectedDirectChat ? (
+              {currentDirectChat ? (
                 <Card className="h-[600px] flex flex-col">
                   <div className="p-4 border-b">
                     <div className="flex items-center justify-between">
                       <div>
-                        <h2 className="font-semibold">{getOtherUserInDirectChat(selectedDirectChat)}</h2>
+                        <h2 className="font-semibold text-xl">Chatting with: {getCurrentChatPartner()}</h2>
                         <p className="text-sm text-muted-foreground">
                           {randomMatch ? 'Random conversation' : 'Private conversation'}
                         </p>
@@ -943,13 +858,15 @@ const Chat = () => {
                 <Card className="h-[600px] flex flex-col">
                   <div className="p-4 border-b">
                     <div className="flex items-center justify-between">
-                      <h2 className="font-semibold">{selectedRoom?.name}</h2>
+                      <div>
+                        <h2 className="font-semibold text-xl">Room: {selectedRoom?.name}</h2>
+                        <p className="text-sm text-muted-foreground">{selectedRoom?.description}</p>
+                      </div>
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <Users className="w-4 h-4" />
-                        {participants.length} online
+                        {participants.length} people online
                       </div>
                     </div>
-                    <p className="text-sm text-muted-foreground">{selectedRoom?.description}</p>
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-4 space-y-3">
