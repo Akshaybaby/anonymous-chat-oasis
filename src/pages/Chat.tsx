@@ -74,6 +74,7 @@ const Chat = () => {
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
   const [randomMatch, setRandomMatch] = useState<CasualUser | null>(null);
   const [reconnectTimeout, setReconnectTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [presenceChannel, setPresenceChannel] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -84,8 +85,22 @@ const Chat = () => {
 
   useEffect(() => {
     loadRooms();
-    loadAllUsers();
   }, []);
+
+  useEffect(() => {
+    if (currentUser) {
+      initializePresence();
+      setUserStatusOnline();
+      startAutoMatching();
+    }
+    
+    return () => {
+      if (currentUser) {
+        setUserStatusOffline();
+        cleanupPresence();
+      }
+    };
+  }, [currentUser]);
 
   useEffect(() => {
     if (currentUser) {
@@ -124,31 +139,102 @@ const Chat = () => {
     setRooms(data || []);
   };
 
-  const loadAllUsers = async () => {
-    const { data, error } = await supabase
+  const setUserStatusOnline = async () => {
+    if (!currentUser) return;
+    
+    await supabase
       .from('casual_users')
-      .select('*')
-      .order('last_active', { ascending: false })
-      .limit(50);
+      .update({ 
+        status: 'available',
+        last_active: new Date().toISOString()
+      })
+      .eq('id', currentUser.id);
+  };
+
+  const setUserStatusOffline = async () => {
+    if (!currentUser) return;
     
-    if (error) {
-      console.error('Error loading users:', error);
-      return;
-    }
+    await supabase
+      .from('casual_users')
+      .update({ status: 'offline' })
+      .eq('id', currentUser.id);
+  };
+
+  const setUserStatusMatched = async () => {
+    if (!currentUser) return;
     
-    setOnlineUsers(data?.map(user => ({
-      id: user.id,
-      username: user.username,
-      user_id: user.id
-    })) || []);
+    await supabase
+      .from('casual_users')
+      .update({ status: 'matched' })
+      .eq('id', currentUser.id);
   };
 
 
-  const loadDirectMessages = async () => {
-    if (!currentDirectChat) return;
+  const initializePresence = () => {
+    if (!currentUser || presenceChannel) return;
 
-    // Clear previous messages
+    const channel = supabase
+      .channel('online_users')
+      .on('presence', { event: 'sync' }, () => {
+        console.log('Presence sync');
+      })
+      .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+        console.log('User joined:', key, newPresences);
+      })
+      .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+        console.log('User left:', key, leftPresences);
+        // Check if the leaving user was our current chat partner
+        if (randomMatch && key === randomMatch.id) {
+          handlePartnerDisconnect();
+        }
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({
+            user_id: currentUser.id,
+            username: currentUser.username,
+            status: 'available',
+            online_at: new Date().toISOString(),
+          });
+        }
+      });
+
+    setPresenceChannel(channel);
+  };
+
+  const cleanupPresence = () => {
+    if (presenceChannel) {
+      supabase.removeChannel(presenceChannel);
+      setPresenceChannel(null);
+    }
+  };
+
+  const handlePartnerDisconnect = async () => {
+    console.log('Partner disconnected, finding new match...');
+    setRandomMatch(null);
+    setCurrentDirectChat(null);
+    setCurrentChatPartner('');
     setDirectMessages([]);
+    
+    // Update status to available and find new match
+    await setUserStatusOnline();
+    
+    toast({
+      title: "Partner disconnected",
+      description: "Finding you a new person to chat with...",
+    });
+    
+    // Wait a moment then find new match
+    setTimeout(() => {
+      findRandomUser();
+    }, 2000);
+  };
+
+  const startAutoMatching = () => {
+    // Auto-start matching when user logs in
+    setTimeout(() => {
+      findRandomUser();
+    }, 1000);
   };
 
   const createUser = async () => {
@@ -220,6 +306,13 @@ const Chat = () => {
       title: "Chat started",
       description: `Started conversation with ${targetUser.username}`,
     });
+  };
+
+  const loadDirectMessages = async () => {
+    if (!currentDirectChat) return;
+
+    // Clear previous messages
+    setDirectMessages([]);
   };
 
   const loadMessages = async () => {
@@ -445,7 +538,7 @@ const Chat = () => {
     return currentChatPartner || (randomMatch ? randomMatch.username : '');
   };
 
-  // Random user connection functions
+  // Updated random user matching logic
   const findRandomUser = async () => {
     if (!currentUser) return;
     
@@ -457,35 +550,63 @@ const Chat = () => {
       setReconnectTimeout(null);
     }
     
-    // Get available users (excluding current user)
-    const { data: availableUsers, error } = await supabase
-      .from('casual_users')
-      .select('*')
-      .neq('id', currentUser.id)
-      .order('last_active', { ascending: false })
-      .limit(100);
-    
-    if (error || !availableUsers || availableUsers.length === 0) {
+    try {
+      // Get available users (excluding current user)
+      const { data: availableUsers, error } = await supabase
+        .from('casual_users')
+        .select('*')
+        .eq('status', 'available')
+        .neq('id', currentUser.id)
+        .order('last_active', { ascending: false });
+      
+      if (error) {
+        console.error('Error finding users:', error);
+        setIsSearchingForMatch(false);
+        return;
+      }
+      
+      if (!availableUsers || availableUsers.length === 0) {
+        setIsSearchingForMatch(false);
+        toast({
+          title: "No users available",
+          description: "Waiting for someone to come online...",
+        });
+        
+        // Try again in 5 seconds
+        const timeout = setTimeout(() => {
+          findRandomUser();
+        }, 5000);
+        setReconnectTimeout(timeout);
+        return;
+      }
+      
+      // Pick a random user
+      const randomUser = availableUsers[Math.floor(Math.random() * availableUsers.length)];
+      
+      // Set both users to matched status
+      await Promise.all([
+        setUserStatusMatched(),
+        supabase
+          .from('casual_users')
+          .update({ status: 'matched' })
+          .eq('id', randomUser.id)
+      ]);
+      
+      setRandomMatch(randomUser);
       setIsSearchingForMatch(false);
+      
+      // Create direct chat
+      await startRandomDirectChat(randomUser);
+      
       toast({
-        title: "No users available",
-        description: "There are no other users online right now. Please try again later.",
+        title: "Connected!",
+        description: `You're now chatting with ${randomUser.username}`,
       });
-      return;
+      
+    } catch (error) {
+      console.error('Error in findRandomUser:', error);
+      setIsSearchingForMatch(false);
     }
-    
-    // Pick a random user
-    const randomUser = availableUsers[Math.floor(Math.random() * availableUsers.length)];
-    setRandomMatch(randomUser);
-    setIsSearchingForMatch(false);
-    
-    // Create or find existing direct chat
-    await startRandomDirectChat(randomUser);
-    
-    toast({
-      title: "Connected!",
-      description: `You're now chatting with ${randomUser.username}`,
-    });
   };
 
   const startRandomDirectChat = async (targetUser: CasualUser) => {
@@ -513,23 +634,31 @@ const Chat = () => {
     setDirectMessages([]);
   };
 
-  const leaveRandomChat = () => {
+  const leaveRandomChat = async () => {
+    // Set both users back to available status
+    if (randomMatch) {
+      await supabase
+        .from('casual_users')
+        .update({ status: 'available' })
+        .eq('id', randomMatch.id);
+    }
+    
+    await setUserStatusOnline();
+    
     setCurrentDirectChat(null);
     setCurrentChatPartner('');
     setRandomMatch(null);
     setDirectMessages([]);
     
-    // Set timeout to find new user after 10 seconds
-    const timeout = setTimeout(() => {
-      findRandomUser();
-    }, 10000);
-    
-    setReconnectTimeout(timeout);
-    
     toast({
       title: "Chat ended",
-      description: "Looking for a new person to chat with in 10 seconds...",
+      description: "Finding you a new person to chat with...",
     });
+    
+    // Find new user immediately
+    setTimeout(() => {
+      findRandomUser();
+    }, 1000);
   };
 
   const skipToNextUser = () => {
@@ -652,17 +781,6 @@ const Chat = () => {
                 <CardContent className="p-4">
                   <h3 className="font-semibold mb-4">Random Chat</h3>
                   <div className="space-y-3">
-                    {!currentDirectChat && !isSearchingForMatch && (
-                      <Button 
-                        onClick={findRandomUser}
-                        variant="light-blue"
-                        className="w-full gap-2"
-                      >
-                        <MessageCircle className="w-4 h-4" />
-                        Connect to Random User
-                      </Button>
-                    )}
-                    
                     {isSearchingForMatch && (
                       <div className="text-center">
                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-3"></div>
@@ -696,10 +814,18 @@ const Chat = () => {
                       </div>
                     )}
                     
-                    {reconnectTimeout && (
+                    {!currentDirectChat && !isSearchingForMatch && reconnectTimeout && (
                       <div className="text-center p-3 bg-muted rounded-lg">
                         <p className="text-sm text-muted-foreground">
-                          Finding new person in 10 seconds...
+                          Finding new person...
+                        </p>
+                      </div>
+                    )}
+                    
+                    {!currentDirectChat && !isSearchingForMatch && !reconnectTimeout && (
+                      <div className="text-center p-3 bg-muted rounded-lg">
+                        <p className="text-sm text-muted-foreground">
+                          No one available right now. We'll keep looking...
                         </p>
                       </div>
                     )}
@@ -793,25 +919,14 @@ const Chat = () => {
                   <div className="text-center text-muted-foreground">
                     <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-50" />
                     <h3 className="text-lg font-semibold mb-2">Random Anonymous Chat</h3>
-                    <p className="mb-4">Connect with random strangers worldwide</p>
-                    <Button 
-                      onClick={findRandomUser}
-                      variant="light-blue"
-                      disabled={isSearchingForMatch}
-                      className="gap-2"
-                    >
-                      {isSearchingForMatch ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                          Finding someone...
-                        </>
-                      ) : (
-                        <>
-                          <MessageCircle className="w-4 h-4" />
-                          Start Random Chat
-                        </>
-                      )}
-                    </Button>
+                    {isSearchingForMatch ? (
+                      <div>
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-3"></div>
+                        <p className="mb-4">Finding someone to chat with...</p>
+                      </div>
+                    ) : (
+                      <p className="mb-4">We're automatically connecting you with strangers worldwide</p>
+                    )}
                   </div>
                 </Card>
               )}
