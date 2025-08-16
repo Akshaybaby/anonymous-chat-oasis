@@ -75,6 +75,9 @@ const Chat = () => {
   const [randomMatch, setRandomMatch] = useState<CasualUser | null>(null);
   const [reconnectTimeout, setReconnectTimeout] = useState<NodeJS.Timeout | null>(null);
   const [presenceChannel, setPresenceChannel] = useState<any>(null);
+  const [userStatusChannel, setUserStatusChannel] = useState<any>(null);
+  const [idleTimeout, setIdleTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [lastActivity, setLastActivity] = useState<Date>(new Date());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -87,15 +90,33 @@ const Chat = () => {
     loadRooms();
   }, []);
 
+  // Activity tracking for idle detection
+  const resetIdleTimer = () => {
+    setLastActivity(new Date());
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
+    
+    const timeout = setTimeout(() => {
+      console.log('User idle for 4 minutes, setting offline');
+      setUserStatusOffline();
+    }, 4 * 60 * 1000); // 4 minutes
+    
+    setIdleTimeout(timeout);
+  };
+
   useEffect(() => {
     let handleBeforeUnload: ((e: BeforeUnloadEvent) => void) | null = null;
     let handleUnload: (() => void) | null = null; 
     let handleVisibilityChange: (() => void) | null = null;
+    let handleActivity: (() => void) | null = null;
     
     if (currentUser) {
       initializePresence();
+      subscribeToUserStatus();
       setUserStatusOnline();
       startAutoMatching();
+      resetIdleTimer();
       
       // Add event listeners for detecting when user leaves the site
       handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -112,7 +133,7 @@ const Chat = () => {
       handleUnload = () => {
         // Final cleanup when page unloads
         setUserStatusOffline();
-        cleanupPresence();
+        cleanupAllChannels();
       };
 
       handleVisibilityChange = () => {
@@ -122,7 +143,13 @@ const Chat = () => {
         } else {
           // User came back to the tab
           setUserStatusOnline();
+          resetIdleTimer();
         }
+      };
+
+      // Track user activity to reset idle timer
+      handleActivity = () => {
+        resetIdleTimer();
       };
 
       // Add all event listeners
@@ -130,12 +157,23 @@ const Chat = () => {
       window.addEventListener('unload', handleUnload);
       window.addEventListener('pagehide', handleUnload);
       document.addEventListener('visibilitychange', handleVisibilityChange);
+      
+      // Activity listeners
+      document.addEventListener('mousedown', handleActivity);
+      document.addEventListener('mousemove', handleActivity);
+      document.addEventListener('keypress', handleActivity);
+      document.addEventListener('scroll', handleActivity);
+      document.addEventListener('touchstart', handleActivity);
     }
     
     return () => {
       if (currentUser) {
         setUserStatusOffline();
-        cleanupPresence();
+        cleanupAllChannels();
+      }
+      
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
       }
       
       // Clean up event listeners
@@ -149,21 +187,35 @@ const Chat = () => {
       if (handleVisibilityChange) {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
+      if (handleActivity) {
+        document.removeEventListener('mousedown', handleActivity);
+        document.removeEventListener('mousemove', handleActivity);
+        document.removeEventListener('keypress', handleActivity);
+        document.removeEventListener('scroll', handleActivity);
+        document.removeEventListener('touchstart', handleActivity);
+      }
     };
   }, [currentUser, currentDirectChat, selectedRoom]);
 
   useEffect(() => {
     if (currentUser) {
+      // Cleanup previous subscriptions when switching tabs/rooms
+      const cleanup = [];
+      
       if (activeTab === 'rooms' && selectedRoom) {
         loadMessages();
         loadParticipants();
         joinRoom();
-        subscribeToMessages();
-        subscribeToParticipants();
+        cleanup.push(subscribeToMessages());
+        cleanup.push(subscribeToParticipants());
       } else if (activeTab === 'direct' && currentDirectChat) {
         loadDirectMessages();
-        subscribeToDirectMessages();
+        cleanup.push(subscribeToDirectMessages());
       }
+      
+      return () => {
+        cleanup.forEach(fn => fn && fn());
+      };
     }
   }, [selectedRoom, currentDirectChat, currentUser, activeTab]);
 
@@ -252,10 +304,54 @@ const Chat = () => {
     setPresenceChannel(channel);
   };
 
-  const cleanupPresence = () => {
+  const subscribeToUserStatus = () => {
+    if (!currentUser || userStatusChannel) return;
+
+    const channel = supabase
+      .channel('user-status-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'casual_users'
+        },
+        (payload) => {
+          console.log('User status changed:', payload);
+          
+          // If our current partner went offline, handle disconnection
+          if (payload.eventType === 'UPDATE' && 
+              payload.new.status === 'offline' && 
+              randomMatch && 
+              payload.new.id === randomMatch.id) {
+            handlePartnerDisconnect();
+          }
+          
+          // If a new user comes online and we're looking for a match, try to connect
+          if (payload.eventType === 'UPDATE' && 
+              payload.new.status === 'available' && 
+              !currentDirectChat && 
+              !isSearchingForMatch &&
+              payload.new.id !== currentUser.id) {
+            setTimeout(() => {
+              findRandomUser();
+            }, 1000);
+          }
+        }
+      )
+      .subscribe();
+
+    setUserStatusChannel(channel);
+  };
+
+  const cleanupAllChannels = () => {
     if (presenceChannel) {
       supabase.removeChannel(presenceChannel);
       setPresenceChannel(null);
+    }
+    if (userStatusChannel) {
+      supabase.removeChannel(userStatusChannel);
+      setUserStatusChannel(null);
     }
   };
 
