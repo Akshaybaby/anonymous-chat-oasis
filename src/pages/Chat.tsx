@@ -294,13 +294,13 @@ const Chat = () => {
     setIsSearchingForMatch(true);
     
     try {
-      // Find available users
+      // Find available users, ordered by ID for consistent round-robin
       const { data: availableUsers, error } = await supabase
         .from('casual_users')
         .select('*')
         .eq('status', 'available')
         .neq('id', currentUser.id)
-        .limit(10);
+        .order('id', { ascending: true });
       
       if (error) {
         console.error('Error finding users:', error);
@@ -313,16 +313,35 @@ const Chat = () => {
         return;
       }
       
-      // Pick random user
-      const randomUser = availableUsers[Math.floor(Math.random() * availableUsers.length)];
+      // Round-robin matching: get last matched user index to continue from there
+      let matchUser = availableUsers[0]; // Default to first user
       
-      // Set both users to matched status
+      // Get the last matched user to determine next in round-robin
+      const { data: lastMatched } = await supabase
+        .from('casual_users')
+        .select('id')
+        .eq('status', 'matched')
+        .order('id', { ascending: true })
+        .limit(1);
+      
+      if (lastMatched && lastMatched.length > 0) {
+        // Find the next user after the last matched one
+        const lastMatchedIndex = availableUsers.findIndex(user => user.id > lastMatched[0].id);
+        if (lastMatchedIndex !== -1) {
+          matchUser = availableUsers[lastMatchedIndex];
+        } else {
+          // Cycle back to first user if we've reached the end
+          matchUser = availableUsers[0];
+        }
+      }
+      
+      // Set both users to matched status simultaneously
       await Promise.all([
         setUserMatched(),
         supabase
           .from('casual_users')
           .update({ status: 'matched' })
-          .eq('id', randomUser.id)
+          .eq('id', matchUser.id)
       ]);
       
       // Create direct chat
@@ -330,9 +349,9 @@ const Chat = () => {
         .from('direct_chats')
         .insert({
           user1_id: currentUser.id,
-          user2_id: randomUser.id,
+          user2_id: matchUser.id,
           user1_username: currentUser.username,
-          user2_username: randomUser.username
+          user2_username: matchUser.username
         })
         .select()
         .single();
@@ -343,7 +362,7 @@ const Chat = () => {
         return;
       }
 
-      setCurrentChatPartner(randomUser);
+      setCurrentChatPartner(matchUser);
       setCurrentDirectChat(chatData);
       setDirectMessages([]);
       setActiveTab('direct');
@@ -351,7 +370,7 @@ const Chat = () => {
       
       toast({
         title: "Connected!",
-        description: `You're now chatting with ${randomUser.username}`,
+        description: `You're now chatting with ${matchUser.username}`,
       });
       
     } catch (error) {
