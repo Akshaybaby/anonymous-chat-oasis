@@ -10,6 +10,8 @@ import { useToast } from '@/hooks/use-toast';
 import { MediaUpload } from '@/components/MediaUpload';
 import { MessageRenderer } from '@/components/MessageRenderer';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { supabase } from "../supabaseClient";
+
 
 interface CasualUser {
   id: string;
@@ -103,6 +105,43 @@ const Chat = () => {
       };
     }
   }, [currentUser]);
+
+  // Subscribe to realtime messages
+useEffect(() => {
+  const channel = supabase
+    .channel("chat-room")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "messages" },
+      (payload) => {
+        setMessages((prev) => [...prev, payload.new]);
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, []);
+
+  // Subscribe to realtime online users
+useEffect(() => {
+  const channel = supabase
+    .channel("online-users")
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "online_users" },
+      () => {
+        fetchOnlineUsers(); // refresh user list instantly
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, []);
+
 
   // Message subscriptions based on active chat
   useEffect(() => {
