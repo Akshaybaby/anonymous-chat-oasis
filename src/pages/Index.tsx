@@ -35,7 +35,33 @@ const Index = () => {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 py-12">
+      <div className="max-w-7xl mx-auto px-4 py-4 sm:py-8">
+        {/* Start Chatting CTA - Mobile Optimized Top Section */}
+        <div className="text-center mb-8 sm:mb-12">
+          <div className="bg-gradient-to-r from-primary/10 to-secondary/10 rounded-2xl p-6 sm:p-8 mb-8">
+            <h2 className="text-3xl sm:text-4xl font-bold mb-4 tracking-tight">
+              Start Chatting <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">Now!</span>
+            </h2>
+            <p className="text-lg sm:text-xl text-muted-foreground mb-6 max-w-2xl mx-auto">
+              Connect instantly with strangers worldwide. Private one-to-one conversations or group chat rooms.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+              <Link to="/chat" className="w-full sm:w-auto">
+                <Button variant="light-blue" size="lg" className="text-lg px-8 py-6 gap-3 w-full sm:w-auto min-w-[200px]">
+                  <MessageCircle className="w-6 h-6" />
+                  Start Private Chat
+                </Button>
+              </Link>
+              <Link to="/chat" className="w-full sm:w-auto">
+                <Button variant="outline" size="lg" className="text-lg px-8 py-6 gap-3 w-full sm:w-auto min-w-[200px]">
+                  <Users className="w-6 h-6" />
+                  Join Chat Rooms
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </div>
+
         {/* Hero Section */}
         <div className="text-center mb-16">
           <h2 className="text-6xl md:text-7xl font-bold mb-6 tracking-tight">
@@ -48,22 +74,8 @@ const Index = () => {
             <span className="text-lg text-muted-foreground ml-2">- Anonymous chatting with real people</span>
           </div>
           <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-            Start private one-to-one conversations or join group chat rooms. Connect instantly with strangers worldwide!
+            Experience seamless real-time messaging with instant connections worldwide
           </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-6">
-            <Link to="/chat">
-              <Button variant="light-blue" size="lg" className="text-lg px-8 py-6 gap-3">
-                <MessageCircle className="w-6 h-6" />
-                Start Private Chat
-              </Button>
-            </Link>
-            <Link to="/chat">
-              <Button variant="outline" size="lg" className="text-lg px-8 py-6 gap-3">
-                <Users className="w-6 h-6" />
-                Join Chat Rooms
-              </Button>
-            </Link>
-          </div>
         </div>
 
         {/* Features Grid */}

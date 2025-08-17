@@ -15,6 +15,7 @@ interface CasualUser {
   id: string;
   username: string;
   avatar_color: string;
+  status: string;
 }
 
 interface ChatRoom {
@@ -64,20 +65,15 @@ const Chat = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
   const [currentDirectChat, setCurrentDirectChat] = useState<DirectChat | null>(null);
-  const [currentChatPartner, setCurrentChatPartner] = useState<string>('');
+  const [currentChatPartner, setCurrentChatPartner] = useState<CasualUser | null>(null);
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
-  const [onlineUsers, setOnlineUsers] = useState<RoomParticipant[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [username, setUsername] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [activeTab, setActiveTab] = useState('direct');
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
-  const [randomMatch, setRandomMatch] = useState<CasualUser | null>(null);
-  const [reconnectTimeout, setReconnectTimeout] = useState<NodeJS.Timeout | null>(null);
-  const [presenceChannel, setPresenceChannel] = useState<any>(null);
-  const [userStatusChannel, setUserStatusChannel] = useState<any>(null);
-  const [idleTimeout, setIdleTimeout] = useState<NodeJS.Timeout | null>(null);
-  const [lastActivity, setLastActivity] = useState<Date>(new Date());
+  const [userPresenceChannel, setUserPresenceChannel] = useState<any>(null);
+  const [messageChannels, setMessageChannels] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -86,139 +82,46 @@ const Chat = () => {
     '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
   ];
 
+  // Load chat rooms on mount
   useEffect(() => {
     loadRooms();
   }, []);
 
-  // Activity tracking for idle detection
-  const resetIdleTimer = () => {
-    setLastActivity(new Date());
-    if (idleTimeout) {
-      clearTimeout(idleTimeout);
-    }
-    
-    const timeout = setTimeout(() => {
-      console.log('User idle for 4 minutes, setting offline');
-      setUserStatusOffline();
-    }, 4 * 60 * 1000); // 4 minutes
-    
-    setIdleTimeout(timeout);
-  };
-
-  useEffect(() => {
-    let handleBeforeUnload: ((e: BeforeUnloadEvent) => void) | null = null;
-    let handleUnload: (() => void) | null = null; 
-    let handleVisibilityChange: (() => void) | null = null;
-    let handleActivity: (() => void) | null = null;
-    
-    if (currentUser) {
-      initializePresence();
-      subscribeToUserStatus();
-      setUserStatusOnline();
-      startAutoMatching();
-      resetIdleTimer();
-      
-      // Add event listeners for detecting when user leaves the site
-      handleBeforeUnload = (e: BeforeUnloadEvent) => {
-        // Immediately set user status to offline
-        setUserStatusOffline();
-        
-        // Optional: Show warning if user is in active chat
-        if (currentDirectChat || selectedRoom) {
-          e.preventDefault();
-          return e.returnValue = 'Are you sure you want to leave? Your chat will be disconnected.';
-        }
-      };
-
-      handleUnload = () => {
-        // Final cleanup when page unloads
-        setUserStatusOffline();
-        cleanupAllChannels();
-      };
-
-      handleVisibilityChange = () => {
-        if (document.hidden) {
-          // User switched to another tab or minimized browser
-          setUserStatusOffline();
-        } else {
-          // User came back to the tab
-          setUserStatusOnline();
-          resetIdleTimer();
-        }
-      };
-
-      // Track user activity to reset idle timer
-      handleActivity = () => {
-        resetIdleTimer();
-      };
-
-      // Add all event listeners
-      window.addEventListener('beforeunload', handleBeforeUnload);
-      window.addEventListener('unload', handleUnload);
-      window.addEventListener('pagehide', handleUnload);
-      document.addEventListener('visibilitychange', handleVisibilityChange);
-      
-      // Activity listeners
-      document.addEventListener('mousedown', handleActivity);
-      document.addEventListener('mousemove', handleActivity);
-      document.addEventListener('keypress', handleActivity);
-      document.addEventListener('scroll', handleActivity);
-      document.addEventListener('touchstart', handleActivity);
-    }
-    
-    return () => {
-      if (currentUser) {
-        setUserStatusOffline();
-        cleanupAllChannels();
-      }
-      
-      if (idleTimeout) {
-        clearTimeout(idleTimeout);
-      }
-      
-      // Clean up event listeners
-      if (handleBeforeUnload) {
-        window.removeEventListener('beforeunload', handleBeforeUnload);
-      }
-      if (handleUnload) {
-        window.removeEventListener('unload', handleUnload);
-        window.removeEventListener('pagehide', handleUnload);
-      }
-      if (handleVisibilityChange) {
-        document.removeEventListener('visibilitychange', handleVisibilityChange);
-      }
-      if (handleActivity) {
-        document.removeEventListener('mousedown', handleActivity);
-        document.removeEventListener('mousemove', handleActivity);
-        document.removeEventListener('keypress', handleActivity);
-        document.removeEventListener('scroll', handleActivity);
-        document.removeEventListener('touchstart', handleActivity);
-      }
-    };
-  }, [currentUser, currentDirectChat, selectedRoom]);
-
+  // Main user lifecycle management
   useEffect(() => {
     if (currentUser) {
-      // Cleanup previous subscriptions when switching tabs/rooms
-      const cleanup = [];
+      setUserOnline();
+      subscribeToUserPresence();
+      startMatching();
+      addActivityListeners();
       
+      return () => {
+        setUserOffline();
+        cleanupAllChannels();
+        removeActivityListeners();
+      };
+    }
+  }, [currentUser]);
+
+  // Message subscriptions based on active chat
+  useEffect(() => {
+    cleanupMessageChannels();
+    
+    if (currentUser) {
       if (activeTab === 'rooms' && selectedRoom) {
         loadMessages();
         loadParticipants();
         joinRoom();
-        cleanup.push(subscribeToMessages());
-        cleanup.push(subscribeToParticipants());
+        subscribeToRoomMessages();
+        subscribeToParticipants();
       } else if (activeTab === 'direct' && currentDirectChat) {
         loadDirectMessages();
-        cleanup.push(subscribeToDirectMessages());
+        subscribeToDirectMessages();
       }
-      
-      return () => {
-        cleanup.forEach(fn => fn && fn());
-      };
     }
   }, [selectedRoom, currentDirectChat, currentUser, activeTab]);
 
+  // Auto-scroll messages
   useEffect(() => {
     scrollToBottom();
   }, [messages, directMessages]);
@@ -241,148 +144,6 @@ const Chat = () => {
     setRooms(data || []);
   };
 
-  const setUserStatusOnline = async () => {
-    if (!currentUser) return;
-    
-    await supabase
-      .from('casual_users')
-      .update({ 
-        status: 'available',
-        last_active: new Date().toISOString()
-      })
-      .eq('id', currentUser.id);
-  };
-
-  const setUserStatusOffline = async () => {
-    if (!currentUser) return;
-    
-    await supabase
-      .from('casual_users')
-      .update({ status: 'offline' })
-      .eq('id', currentUser.id);
-  };
-
-  const setUserStatusMatched = async () => {
-    if (!currentUser) return;
-    
-    await supabase
-      .from('casual_users')
-      .update({ status: 'matched' })
-      .eq('id', currentUser.id);
-  };
-
-
-  const initializePresence = () => {
-    if (!currentUser || presenceChannel) return;
-
-    const channel = supabase
-      .channel('online_users')
-      .on('presence', { event: 'sync' }, () => {
-        console.log('Presence sync');
-      })
-      .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-        console.log('User joined:', key, newPresences);
-      })
-      .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
-        console.log('User left:', key, leftPresences);
-        // Check if the leaving user was our current chat partner
-        if (randomMatch && key === randomMatch.id) {
-          handlePartnerDisconnect();
-        }
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await channel.track({
-            user_id: currentUser.id,
-            username: currentUser.username,
-            status: 'available',
-            online_at: new Date().toISOString(),
-          });
-        }
-      });
-
-    setPresenceChannel(channel);
-  };
-
-  const subscribeToUserStatus = () => {
-    if (!currentUser || userStatusChannel) return;
-
-    const channel = supabase
-      .channel('user-status-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'casual_users'
-        },
-        (payload) => {
-          console.log('User status changed:', payload);
-          
-          // If our current partner went offline, handle disconnection
-          if (payload.eventType === 'UPDATE' && 
-              payload.new.status === 'offline' && 
-              randomMatch && 
-              payload.new.id === randomMatch.id) {
-            handlePartnerDisconnect();
-          }
-          
-          // If a new user comes online and we're looking for a match, try to connect
-          if (payload.eventType === 'UPDATE' && 
-              payload.new.status === 'available' && 
-              !currentDirectChat && 
-              !isSearchingForMatch &&
-              payload.new.id !== currentUser.id) {
-            setTimeout(() => {
-              findRandomUser();
-            }, 1000);
-          }
-        }
-      )
-      .subscribe();
-
-    setUserStatusChannel(channel);
-  };
-
-  const cleanupAllChannels = () => {
-    if (presenceChannel) {
-      supabase.removeChannel(presenceChannel);
-      setPresenceChannel(null);
-    }
-    if (userStatusChannel) {
-      supabase.removeChannel(userStatusChannel);
-      setUserStatusChannel(null);
-    }
-  };
-
-  const handlePartnerDisconnect = async () => {
-    console.log('Partner disconnected, finding new match...');
-    setRandomMatch(null);
-    setCurrentDirectChat(null);
-    setCurrentChatPartner('');
-    setDirectMessages([]);
-    
-    // Update status to available and find new match
-    await setUserStatusOnline();
-    
-    toast({
-      title: "Partner disconnected",
-      description: "Finding you a new person to chat with...",
-    });
-    
-    // Wait a moment then find new match
-    setTimeout(() => {
-      findRandomUser();
-    }, 2000);
-  };
-
-  const startAutoMatching = () => {
-    // Auto-start matching when user logs in
-    setTimeout(() => {
-      findRandomUser();
-    }, 1000);
-  };
-
   const createUser = async () => {
     if (!username.trim()) {
       toast({
@@ -400,7 +161,8 @@ const Chat = () => {
       .from('casual_users')
       .insert({
         username: username.trim(),
-        avatar_color: avatarColor
+        avatar_color: avatarColor,
+        status: 'available'
       })
       .select()
       .single();
@@ -420,51 +182,207 @@ const Chat = () => {
     setIsJoining(false);
   };
 
-  const startDirectChat = async (targetUser: RoomParticipant) => {
+  // User presence management
+  const setUserOnline = async () => {
     if (!currentUser) return;
-
-    const { data, error } = await supabase
-      .from('direct_chats')
-      .insert({
-        user1_id: currentUser.id,
-        user2_id: targetUser.user_id,
-        user1_username: currentUser.username,
-        user2_username: targetUser.username
+    
+    await supabase
+      .from('casual_users')
+      .update({ 
+        status: 'available',
+        last_active: new Date().toISOString()
       })
-      .select()
-      .single();
+      .eq('id', currentUser.id);
+  };
 
-    if (error) {
-      console.error('Error creating direct chat:', error);
-      toast({
-        title: "Error",
-        description: "Failed to start chat. Please try again.",
-        variant: "destructive"
-      });
-      return;
+  const setUserOffline = async () => {
+    if (!currentUser) return;
+    
+    // If in a chat, update partner status back to available
+    if (currentChatPartner && currentDirectChat) {
+      await supabase
+        .from('casual_users')
+        .update({ status: 'available' })
+        .eq('id', currentChatPartner.id);
     }
+    
+    await supabase
+      .from('casual_users')
+      .update({ status: 'offline' })
+      .eq('id', currentUser.id);
+  };
 
-    setCurrentDirectChat(data);
-    setCurrentChatPartner(targetUser.username);
-    setActiveTab('direct');
+  const setUserMatched = async () => {
+    if (!currentUser) return;
+    
+    await supabase
+      .from('casual_users')
+      .update({ status: 'matched' })
+      .eq('id', currentUser.id);
+  };
+
+  // Realtime user presence subscription
+  const subscribeToUserPresence = () => {
+    if (!currentUser || userPresenceChannel) return;
+
+    const channel = supabase
+      .channel('user-presence')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'casual_users'
+        },
+        (payload) => {
+          handleUserStatusChange(payload.new as CasualUser);
+        }
+      )
+      .subscribe();
+
+    setUserPresenceChannel(channel);
+  };
+
+  const handleUserStatusChange = (user: CasualUser) => {
+    // If our current partner went offline, handle disconnection
+    if (currentChatPartner && user.id === currentChatPartner.id && user.status === 'offline') {
+      handlePartnerDisconnect();
+    }
+    
+    // If a new user becomes available and we need a match, try to connect
+    if (user.status === 'available' && 
+        !currentDirectChat && 
+        !isSearchingForMatch &&
+        user.id !== currentUser?.id) {
+      setTimeout(() => tryMatch(), 1000);
+    }
+  };
+
+  const handlePartnerDisconnect = async () => {
+    if (!currentChatPartner) return;
+    
+    console.log('Partner disconnected, finding new match...');
+    setCurrentChatPartner(null);
+    setCurrentDirectChat(null);
     setDirectMessages([]);
+    
+    // Update status back to available
+    await setUserOnline();
+    
     toast({
-      title: "Chat started",
-      description: `Started conversation with ${targetUser.username}`,
+      title: "Partner disconnected",
+      description: "Finding you a new person to chat with...",
     });
+    
+    // Find new match after delay
+    setTimeout(() => startMatching(), 2000);
   };
 
-  const loadDirectMessages = async () => {
-    if (!currentDirectChat) return;
+  // Matching system
+  const startMatching = () => {
+    if (!currentUser || currentDirectChat) return;
+    setTimeout(() => tryMatch(), 1000);
+  };
 
-    // Clear previous messages
+  const tryMatch = async () => {
+    if (!currentUser || currentDirectChat || isSearchingForMatch) return;
+    
+    setIsSearchingForMatch(true);
+    
+    try {
+      // Find available users
+      const { data: availableUsers, error } = await supabase
+        .from('casual_users')
+        .select('*')
+        .eq('status', 'available')
+        .neq('id', currentUser.id)
+        .limit(10);
+      
+      if (error) {
+        console.error('Error finding users:', error);
+        setIsSearchingForMatch(false);
+        return;
+      }
+      
+      if (!availableUsers || availableUsers.length === 0) {
+        setIsSearchingForMatch(false);
+        return;
+      }
+      
+      // Pick random user
+      const randomUser = availableUsers[Math.floor(Math.random() * availableUsers.length)];
+      
+      // Set both users to matched status
+      await Promise.all([
+        setUserMatched(),
+        supabase
+          .from('casual_users')
+          .update({ status: 'matched' })
+          .eq('id', randomUser.id)
+      ]);
+      
+      // Create direct chat
+      const { data: chatData, error: chatError } = await supabase
+        .from('direct_chats')
+        .insert({
+          user1_id: currentUser.id,
+          user2_id: randomUser.id,
+          user1_username: currentUser.username,
+          user2_username: randomUser.username
+        })
+        .select()
+        .single();
+
+      if (chatError) {
+        console.error('Error creating chat:', chatError);
+        setIsSearchingForMatch(false);
+        return;
+      }
+
+      setCurrentChatPartner(randomUser);
+      setCurrentDirectChat(chatData);
+      setDirectMessages([]);
+      setActiveTab('direct');
+      setIsSearchingForMatch(false);
+      
+      toast({
+        title: "Connected!",
+        description: `You're now chatting with ${randomUser.username}`,
+      });
+      
+    } catch (error) {
+      console.error('Error in matching:', error);
+      setIsSearchingForMatch(false);
+    }
+  };
+
+  const skipToNextUser = async () => {
+    if (!currentChatPartner) return;
+    
+    // Set partner back to available
+    await supabase
+      .from('casual_users')
+      .update({ status: 'available' })
+      .eq('id', currentChatPartner.id);
+    
+    await setUserOnline();
+    
+    setCurrentChatPartner(null);
+    setCurrentDirectChat(null);
     setDirectMessages([]);
+    
+    toast({
+      title: "Finding new person",
+      description: "Looking for someone new to chat with...",
+    });
+    
+    setTimeout(() => tryMatch(), 1000);
   };
 
+  // Message management
   const loadMessages = async () => {
     if (!selectedRoom) return;
 
-    // Load only the last 10 messages for new users
     const { data, error } = await supabase
       .from('messages')
       .select('*')
@@ -477,8 +395,13 @@ const Chat = () => {
       return;
     }
 
-    // Reverse to show messages in chronological order
     setMessages(data?.reverse() || []);
+  };
+
+  const loadDirectMessages = async () => {
+    if (!currentDirectChat) return;
+    // Clear previous messages - all direct chat messages are real-time only
+    setDirectMessages([]);
   };
 
   const loadParticipants = async () => {
@@ -608,7 +531,8 @@ const Chat = () => {
     }
   };
 
-  const subscribeToMessages = () => {
+  // Realtime message subscriptions
+  const subscribeToRoomMessages = () => {
     if (!selectedRoom) return;
 
     const channel = supabase
@@ -627,9 +551,7 @@ const Chat = () => {
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    setMessageChannels(prev => [...prev, channel]);
   };
 
   const subscribeToDirectMessages = () => {
@@ -651,9 +573,7 @@ const Chat = () => {
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    setMessageChannels(prev => [...prev, channel]);
   };
 
   const subscribeToParticipants = () => {
@@ -675,140 +595,79 @@ const Chat = () => {
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    setMessageChannels(prev => [...prev, channel]);
   };
 
-  const getCurrentChatPartner = () => {
-    return currentChatPartner || (randomMatch ? randomMatch.username : '');
-  };
-
-  // Updated random user matching logic
-  const findRandomUser = async () => {
-    if (!currentUser) return;
-    
-    setIsSearchingForMatch(true);
-    
-    // Clear any existing timeout
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-      setReconnectTimeout(null);
-    }
-    
-    try {
-      // Get available users (excluding current user)
-      const { data: availableUsers, error } = await supabase
-        .from('casual_users')
-        .select('*')
-        .eq('status', 'available')
-        .neq('id', currentUser.id)
-        .order('last_active', { ascending: false });
-      
-      if (error) {
-        console.error('Error finding users:', error);
-        setIsSearchingForMatch(false);
-        return;
-      }
-      
-      if (!availableUsers || availableUsers.length === 0) {
-        setIsSearchingForMatch(false);
-        toast({
-          title: "No users available",
-          description: "Waiting for someone to come online...",
-        });
-        
-        // Try again in 5 seconds
-        const timeout = setTimeout(() => {
-          findRandomUser();
-        }, 5000);
-        setReconnectTimeout(timeout);
-        return;
-      }
-      
-      // Pick a random user
-      const randomUser = availableUsers[Math.floor(Math.random() * availableUsers.length)];
-      
-      // Set both users to matched status
-      await Promise.all([
-        setUserStatusMatched(),
+  // Activity listeners for auto-logout
+  const addActivityListeners = () => {
+    const handleActivity = () => {
+      if (currentUser) {
         supabase
           .from('casual_users')
-          .update({ status: 'matched' })
-          .eq('id', randomUser.id)
-      ]);
-      
-      setRandomMatch(randomUser);
-      setIsSearchingForMatch(false);
-      
-      // Create direct chat
-      await startRandomDirectChat(randomUser);
-      
-      toast({
-        title: "Connected!",
-        description: `You're now chatting with ${randomUser.username}`,
-      });
-      
-    } catch (error) {
-      console.error('Error in findRandomUser:', error);
-      setIsSearchingForMatch(false);
+          .update({ last_active: new Date().toISOString() })
+          .eq('id', currentUser.id);
+      }
+    };
+
+    const handleBeforeUnload = () => setUserOffline();
+    const handleVisibilityChange = () => {
+      if (document.hidden) setUserOffline();
+      else if (currentUser) setUserOnline();
+    };
+
+    // Add listeners
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('unload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('mousedown', handleActivity);
+    document.addEventListener('keypress', handleActivity);
+    document.addEventListener('touchstart', handleActivity);
+
+    // Store cleanup function
+    (window as any)._chatActivityCleanup = () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('unload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('mousedown', handleActivity);
+      document.removeEventListener('keypress', handleActivity);
+      document.removeEventListener('touchstart', handleActivity);
+    };
+
+    // Auto-offline after 4 minutes of inactivity
+    let inactivityTimeout: NodeJS.Timeout;
+    const resetInactivityTimer = () => {
+      clearTimeout(inactivityTimeout);
+      inactivityTimeout = setTimeout(() => {
+        if (currentUser) setUserOffline();
+      }, 4 * 60 * 1000);
+    };
+
+    document.addEventListener('mousedown', resetInactivityTimer);
+    document.addEventListener('keypress', resetInactivityTimer);
+    document.addEventListener('touchstart', resetInactivityTimer);
+    resetInactivityTimer();
+  };
+
+  const removeActivityListeners = () => {
+    if ((window as any)._chatActivityCleanup) {
+      (window as any)._chatActivityCleanup();
     }
   };
 
-  const startRandomDirectChat = async (targetUser: CasualUser) => {
-    if (!currentUser) return;
-
-    const { data, error } = await supabase
-      .from('direct_chats')
-      .insert({
-        user1_id: currentUser.id,
-        user2_id: targetUser.id,
-        user1_username: currentUser.username,
-        user2_username: targetUser.username
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error('Error creating direct chat:', error);
-      return;
+  // Cleanup functions
+  const cleanupAllChannels = () => {
+    if (userPresenceChannel) {
+      supabase.removeChannel(userPresenceChannel);
+      setUserPresenceChannel(null);
     }
-
-    setCurrentDirectChat(data);
-    setCurrentChatPartner(targetUser.username);
-    setActiveTab('direct');
-    setDirectMessages([]);
+    cleanupMessageChannels();
   };
 
-  const leaveRandomChat = async () => {
-    // Set both users back to available status
-    if (randomMatch) {
-      await supabase
-        .from('casual_users')
-        .update({ status: 'available' })
-        .eq('id', randomMatch.id);
-    }
-    
-    await setUserStatusOnline();
-    
-    setCurrentDirectChat(null);
-    setCurrentChatPartner('');
-    setRandomMatch(null);
-    setDirectMessages([]);
-    
-    toast({
-      title: "Chat ended",
-      description: "Finding you a new person to chat with...",
+  const cleanupMessageChannels = () => {
+    messageChannels.forEach(channel => {
+      supabase.removeChannel(channel);
     });
-    
-    // Find new user immediately
-    setTimeout(() => {
-      findRandomUser();
-    }, 1000);
-  };
-
-  const skipToNextUser = () => {
-    leaveRandomChat();
+    setMessageChannels([]);
   };
 
   if (!currentUser) {
@@ -921,7 +780,7 @@ const Chat = () => {
           </TabsList>
 
           <TabsContent value="direct" className="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6">
-            {/* Random Chat Controls */}
+            {/* Private Chat Status */}
             <div className="lg:col-span-1 space-y-4">
               <Card>
                 <CardContent className="p-4">
@@ -934,11 +793,11 @@ const Chat = () => {
                       </div>
                     )}
                     
-                    {currentDirectChat && randomMatch && (
+                    {currentDirectChat && currentChatPartner && (
                       <div className="space-y-2">
                         <div className="p-3 bg-muted rounded-lg">
                           <p className="text-sm font-medium">Chatting with:</p>
-                          <p className="text-lg font-semibold text-primary">{getCurrentChatPartner()}</p>
+                          <p className="text-lg font-semibold text-primary">{currentChatPartner.username}</p>
                         </div>
                         <Button 
                           onClick={skipToNextUser}
@@ -948,30 +807,13 @@ const Chat = () => {
                           <SkipForward className="w-4 h-4" />
                           Next Person
                         </Button>
-                        <Button 
-                          onClick={leaveRandomChat}
-                          variant="destructive"
-                          size="sm"
-                          className="w-full gap-2"
-                        >
-                          <LogOut className="w-4 h-4" />
-                          Leave Chat
-                        </Button>
                       </div>
                     )}
                     
-                    {!currentDirectChat && !isSearchingForMatch && reconnectTimeout && (
+                    {!currentDirectChat && !isSearchingForMatch && (
                       <div className="text-center p-3 bg-muted rounded-lg">
                         <p className="text-sm text-muted-foreground">
-                          Finding new person...
-                        </p>
-                      </div>
-                    )}
-                    
-                    {!currentDirectChat && !isSearchingForMatch && !reconnectTimeout && (
-                      <div className="text-center p-3 bg-muted rounded-lg">
-                        <p className="text-sm text-muted-foreground">
-                          No one available right now. We'll keep looking...
+                          Looking for someone to chat with...
                         </p>
                       </div>
                     )}
@@ -987,55 +829,47 @@ const Chat = () => {
                   <div className="p-4 border-b">
                     <div className="flex items-center justify-between">
                       <div>
-                        <h2 className="font-semibold text-xl">Chatting with: {getCurrentChatPartner()}</h2>
-                        <p className="text-sm text-muted-foreground">
-                          {randomMatch ? 'Random conversation' : 'Private conversation'}
-                        </p>
+                        <h2 className="font-semibold text-xl">
+                          Chatting with: {currentChatPartner?.username}
+                        </h2>
+                        <p className="text-sm text-muted-foreground">Random conversation</p>
                       </div>
-                      {randomMatch && (
-                        <div className="flex gap-2">
-                          <Button 
-                            onClick={skipToNextUser}
-                            variant="outline"
-                            size="sm"
-                            className="gap-2"
-                          >
-                            <SkipForward className="w-3 h-3" />
-                            Next
-                          </Button>
-                          <Button 
-                            onClick={leaveRandomChat}
-                            variant="destructive"
-                            size="sm"
-                            className="gap-2"
-                          >
-                            <LogOut className="w-3 h-3" />
-                            Leave
-                          </Button>
-                        </div>
-                      )}
+                      <Button 
+                        onClick={skipToNextUser}
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                      >
+                        <SkipForward className="w-3 h-3" />
+                        Next
+                      </Button>
                     </div>
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-4 space-y-3">
                     {directMessages.map((message) => (
-                      <div key={message.id} className="flex gap-3">
-                        <div 
-                          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0"
-                          style={{ backgroundColor: avatarColors[message.sender_username.charCodeAt(0) % avatarColors.length] }}
+                      <div
+                        key={message.id}
+                        className={`flex ${message.sender_id === currentUser.id ? 'justify-end' : 'justify-start'}`}
+                      >
+                        <div
+                          className={`max-w-[70%] px-4 py-2 rounded-lg ${
+                            message.sender_id === currentUser.id
+                              ? 'bg-primary text-primary-foreground'
+                              : 'bg-muted'
+                          }`}
                         >
-                          {message.sender_username.charAt(0).toUpperCase()}
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-baseline gap-2">
-                            <span className="font-medium text-sm">{message.sender_username}</span>
-                            <span className="text-xs text-muted-foreground">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-medium">
+                              {message.sender_username}
+                            </span>
+                            <span className="text-xs opacity-70">
                               {new Date(message.created_at).toLocaleTimeString()}
                             </span>
                           </div>
                           <MessageRenderer 
                             content={message.content}
-                            messageType={message.message_type || 'text'}
+                            messageType={message.message_type}
                             mediaUrl={message.media_url}
                           />
                         </div>
@@ -1048,7 +882,7 @@ const Chat = () => {
                     <div className="flex gap-2">
                       <MediaUpload onMediaUploaded={sendMediaMessage} />
                       <Input
-                        placeholder="Type your message..."
+                        placeholder="Type a message..."
                         value={newMessage}
                         onChange={(e) => setNewMessage(e.target.value)}
                         onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
@@ -1062,32 +896,27 @@ const Chat = () => {
                 </Card>
               ) : (
                 <Card className="h-[500px] sm:h-[600px] flex items-center justify-center">
-                  <div className="text-center text-muted-foreground">
-                    <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                    <h3 className="text-lg font-semibold mb-2">Random Anonymous Chat</h3>
-                    {isSearchingForMatch ? (
-                      <div>
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-3"></div>
-                        <p className="mb-4">Finding someone to chat with...</p>
-                      </div>
-                    ) : (
-                      <p className="mb-4">We're automatically connecting you with strangers worldwide</p>
-                    )}
+                  <div className="text-center">
+                    <MessageCircle className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold mb-2">No Active Chat</h3>
+                    <p className="text-muted-foreground">
+                      {isSearchingForMatch 
+                        ? "We're finding someone for you to chat with..." 
+                        : "Waiting to match you with someone..."
+                      }
+                    </p>
                   </div>
                 </Card>
               )}
             </div>
           </TabsContent>
 
-          <TabsContent value="rooms" className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
+          <TabsContent value="rooms" className="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6">
             {/* Room List */}
-            <div className="lg:col-span-1">
+            <div className="lg:col-span-1 space-y-4">
               <Card>
                 <CardContent className="p-4">
-                  <h3 className="font-semibold mb-4 flex items-center gap-2">
-                    <MessageCircle className="w-5 h-5" />
-                    Chat Rooms
-                  </h3>
+                  <h3 className="font-semibold mb-4">Chat Rooms</h3>
                   <div className="space-y-2">
                     {rooms.map((room) => (
                       <button
@@ -1096,7 +925,7 @@ const Chat = () => {
                         className={`w-full text-left p-3 rounded-lg transition-colors ${
                           selectedRoom?.id === room.id
                             ? 'bg-primary text-primary-foreground'
-                            : 'hover:bg-muted'
+                            : 'bg-muted hover:bg-muted/80'
                         }`}
                       >
                         <div className="font-medium">{room.name}</div>
@@ -1106,40 +935,60 @@ const Chat = () => {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Participants */}
+              {selectedRoom && (
+                <Card>
+                  <CardContent className="p-4">
+                    <h3 className="font-semibold mb-4">
+                      Online ({participants.length})
+                    </h3>
+                    <div className="space-y-2">
+                      {participants.map((participant) => (
+                        <div key={participant.id} className="flex items-center gap-2 p-2 bg-muted rounded">
+                          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                          <span className="text-sm">{participant.username}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
             </div>
 
-            {/* Room Chat Area */}
-            <div className="lg:col-span-1">
+            {/* Chat Area */}
+            <div className="lg:col-span-3">
               {selectedRoom ? (
                 <Card className="h-[500px] sm:h-[600px] flex flex-col">
                   <div className="p-4 border-b">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h2 className="font-semibold text-xl">Room: {selectedRoom?.name}</h2>
-                        <p className="text-sm text-muted-foreground">{selectedRoom?.description}</p>
-                      </div>
-                    </div>
+                    <h2 className="font-semibold text-xl">{selectedRoom.name}</h2>
+                    <p className="text-sm text-muted-foreground">{selectedRoom.description}</p>
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-4 space-y-3">
                     {messages.map((message) => (
-                      <div key={message.id} className="flex gap-3">
-                        <div 
-                          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0"
-                          style={{ backgroundColor: avatarColors[message.username.charCodeAt(0) % avatarColors.length] }}
+                      <div
+                        key={message.id}
+                        className={`flex ${message.username === currentUser.username ? 'justify-end' : 'justify-start'}`}
+                      >
+                        <div
+                          className={`max-w-[70%] px-4 py-2 rounded-lg ${
+                            message.username === currentUser.username
+                              ? 'bg-primary text-primary-foreground'
+                              : 'bg-muted'
+                          }`}
                         >
-                          {message.username.charAt(0).toUpperCase()}
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-baseline gap-2">
-                            <span className="font-medium text-sm">{message.username}</span>
-                            <span className="text-xs text-muted-foreground">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-medium">
+                              {message.username}
+                            </span>
+                            <span className="text-xs opacity-70">
                               {new Date(message.created_at).toLocaleTimeString()}
                             </span>
                           </div>
                           <MessageRenderer 
                             content={message.content}
-                            messageType={message.message_type || 'text'}
+                            messageType={message.message_type}
                             mediaUrl={message.media_url}
                           />
                         </div>
@@ -1152,7 +1001,7 @@ const Chat = () => {
                     <div className="flex gap-2">
                       <MediaUpload onMediaUploaded={sendMediaMessage} />
                       <Input
-                        placeholder="Type your message..."
+                        placeholder={`Message ${selectedRoom.name}...`}
                         value={newMessage}
                         onChange={(e) => setNewMessage(e.target.value)}
                         onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
@@ -1166,15 +1015,16 @@ const Chat = () => {
                 </Card>
               ) : (
                 <Card className="h-[500px] sm:h-[600px] flex items-center justify-center">
-                  <div className="text-center text-muted-foreground">
-                    <Users className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                    <h3 className="text-lg font-semibold mb-2">Select a chat room</h3>
-                    <p>Choose a room to join the conversation</p>
+                  <div className="text-center">
+                    <Users className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold mb-2">Select a Chat Room</h3>
+                    <p className="text-muted-foreground">
+                      Choose a room from the sidebar to start chatting with the community
+                    </p>
                   </div>
                 </Card>
               )}
             </div>
-
           </TabsContent>
         </Tabs>
       </div>
