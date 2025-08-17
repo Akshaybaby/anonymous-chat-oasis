@@ -399,26 +399,22 @@ const Chat = () => {
       
       console.log('Attempting to match with:', matchUser.username);
       
-      // Try manual atomic update - check and update both users
-      const { data: checkUser, error: checkError } = await supabase
-        .from('casual_users')
-        .select('status')
-        .eq('id', matchUser.id)
-        .single();
-      
-      if (checkError || checkUser?.status !== 'available') {
-        console.log('User no longer available:', matchUser.username);
+      // Use atomic matching function to prevent race conditions
+      const { data: matchSuccess, error: matchError } = await (supabase as any)
+        .rpc('match_users', {
+          user1_id: currentUser.id,
+          user2_id: matchUser.id
+        });
+
+      if (matchError || !matchSuccess) {
+        console.log('Failed to match with user (already matched or unavailable):', matchUser.username);
         setIsSearchingForMatch(false);
         // Try again immediately with different user
         setTimeout(tryMatch, 100);
         return;
       }
-      
-      // Update both users to matched
-      await Promise.all([
-        supabase.from('casual_users').update({ status: 'matched' }).eq('id', currentUser.id),
-        supabase.from('casual_users').update({ status: 'matched' }).eq('id', matchUser.id)
-      ]);
+
+      console.log('Successfully matched users via atomic function');
       
       // Create direct chat
       const { data: chatData, error: chatError } = await supabase
