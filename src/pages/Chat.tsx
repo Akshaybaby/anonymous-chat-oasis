@@ -78,9 +78,9 @@ const Chat = () => {
   const [messageChannels, setMessageChannels] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
-  // existing states…
-  const [messages, setMessages] = useState<any[]>([]);
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  
+  const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
+  const [isConnected, setIsConnected] = useState(false);
 
   // ✅ Add this new state for tracking presence
   const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
@@ -113,6 +113,8 @@ const Chat = () => {
     }
   }, [currentUser]);
 
+  
+
   // Subscribe to realtime messages
 useEffect(() => {
   const channel = supabase
@@ -144,6 +146,36 @@ useEffect(() => {
     )
     .subscribe();
 
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, []);
+// ✅ Realtime subscription for messages
+useEffect(() => {
+  // Fetch initial messages (your existing fetch call should already be here)
+
+  // Subscribe to changes in messages table
+  const channel = supabase
+    .channel('realtime-messages')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'messages',
+      },
+      (payload) => {
+        console.log('Realtime change received!', payload);
+
+        // Append new messages to state
+        if (payload.eventType === 'INSERT') {
+          setMessages((prev) => [...prev, payload.new]);
+        }
+      }
+    )
+    .subscribe();
+
+  // Cleanup subscription on unmount
   return () => {
     supabase.removeChannel(channel);
   };
