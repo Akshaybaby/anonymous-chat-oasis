@@ -92,6 +92,7 @@ const Chat = () => {
     if (currentUser) {
       setUserOnline();
       subscribeToUserPresence();
+      subscribeToMatchingEvents();
       startMatching();
       addActivityListeners();
       
@@ -246,19 +247,47 @@ const Chat = () => {
     setUserPresenceChannel(channel);
   };
 
+  // Subscribe to new user insertions for instant matching
+  const subscribeToMatchingEvents = () => {
+    if (!currentUser) return;
+
+    const channel = supabase
+      .channel('matching-events')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'casual_users'
+        },
+        (payload) => {
+          const newUser = payload.new as CasualUser;
+          // If a new user joins and we need a match, try to connect
+          if (newUser.status === 'available' && 
+              !currentDirectChat && 
+              !isSearchingForMatch &&
+              newUser.id !== currentUser?.id) {
+            setTimeout(() => tryMatch(), 100); // Small delay to avoid race conditions
+          }
+        }
+      )
+      .subscribe();
+
+    setMessageChannels(prev => [...prev, channel]);
+  };
+
   const handleUserStatusChange = (user: CasualUser) => {
     // If our current partner went offline, handle disconnection
     if (currentChatPartner && user.id === currentChatPartner.id && user.status === 'offline') {
       handlePartnerDisconnect();
     }
     
-    // If a new user becomes available and we need a match, try to connect immediately
+    // If a user becomes available and we need a match, try to connect immediately
     if (user.status === 'available' && 
         !currentDirectChat && 
         !isSearchingForMatch &&
         user.id !== currentUser?.id) {
-      // Use immediate matching - no timeout
-      tryMatch();
+      setTimeout(() => tryMatch(), 100); // Small delay to avoid race conditions
     }
   };
 
@@ -294,13 +323,12 @@ const Chat = () => {
     setIsSearchingForMatch(true);
     
     try {
-      // Find available users, ordered by ID for consistent round-robin
+      // Find available users for random matching
       const { data: availableUsers, error } = await supabase
         .from('casual_users')
         .select('*')
         .eq('status', 'available')
-        .neq('id', currentUser.id)
-        .order('id', { ascending: true });
+        .neq('id', currentUser.id);
       
       if (error) {
         console.error('Error finding users:', error);
@@ -313,36 +341,25 @@ const Chat = () => {
         return;
       }
       
-      // Round-robin matching: get last matched user index to continue from there
-      let matchUser = availableUsers[0]; // Default to first user
-      
-      // Get the last matched user to determine next in round-robin
-      const { data: lastMatched } = await supabase
-        .from('casual_users')
-        .select('id')
-        .eq('status', 'matched')
-        .order('id', { ascending: true })
-        .limit(1);
-      
-      if (lastMatched && lastMatched.length > 0) {
-        // Find the next user after the last matched one
-        const lastMatchedIndex = availableUsers.findIndex(user => user.id > lastMatched[0].id);
-        if (lastMatchedIndex !== -1) {
-          matchUser = availableUsers[lastMatchedIndex];
-        } else {
-          // Cycle back to first user if we've reached the end
-          matchUser = availableUsers[0];
-        }
-      }
+      // Random matching - pick a random available user
+      const randomIndex = Math.floor(Math.random() * availableUsers.length);
+      const matchUser = availableUsers[randomIndex];
       
       // Set both users to matched status simultaneously
-      await Promise.all([
+      const [userUpdate, matchUpdate] = await Promise.allSettled([
         setUserMatched(),
         supabase
           .from('casual_users')
           .update({ status: 'matched' })
           .eq('id', matchUser.id)
       ]);
+
+      // Check if both updates succeeded
+      if (userUpdate.status === 'rejected' || matchUpdate.status === 'rejected') {
+        console.error('Failed to update user statuses');
+        setIsSearchingForMatch(false);
+        return;
+      }
       
       // Create direct chat
       const { data: chatData, error: chatError } = await supabase
@@ -423,8 +440,21 @@ const Chat = () => {
 
   const loadDirectMessages = async () => {
     if (!currentDirectChat) return;
-    // Clear previous messages - all direct chat messages are real-time only
-    setDirectMessages([]);
+    
+    // Load existing messages from this chat
+    const { data, error } = await supabase
+      .from('direct_messages')
+      .select('*')
+      .eq('chat_id', currentDirectChat.id)
+      .order('created_at', { ascending: true })
+      .limit(50);
+
+    if (error) {
+      console.error('Error loading direct messages:', error);
+      return;
+    }
+
+    setDirectMessages(data || []);
   };
 
   const loadParticipants = async () => {
