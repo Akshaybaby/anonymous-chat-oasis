@@ -206,10 +206,13 @@ const Chat = () => {
         .eq('id', currentChatPartner.id);
     }
     
-    await supabase
+    // Immediately set user offline
+    const { error } = await supabase
       .from('casual_users')
       .update({ status: 'offline' })
       .eq('id', currentUser.id);
+    
+    if (error) console.error('Error setting user offline:', error);
   };
 
   const setUserMatched = async () => {
@@ -249,12 +252,13 @@ const Chat = () => {
       handlePartnerDisconnect();
     }
     
-    // If a new user becomes available and we need a match, try to connect
+    // If a new user becomes available and we need a match, try to connect immediately
     if (user.status === 'available' && 
         !currentDirectChat && 
         !isSearchingForMatch &&
         user.id !== currentUser?.id) {
-      setTimeout(() => tryMatch(), 1000);
+      // Use immediate matching - no timeout
+      tryMatch();
     }
   };
 
@@ -274,14 +278,14 @@ const Chat = () => {
       description: "Finding you a new person to chat with...",
     });
     
-    // Find new match after delay
-    setTimeout(() => startMatching(), 2000);
+    // Start matching immediately - no delay
+    startMatching();
   };
 
-  // Matching system
+  // Matching system - no timeouts, immediate real-time matching
   const startMatching = () => {
     if (!currentUser || currentDirectChat) return;
-    setTimeout(() => tryMatch(), 1000);
+    tryMatch(); // Immediate matching
   };
 
   const tryMatch = async () => {
@@ -376,7 +380,7 @@ const Chat = () => {
       description: "Looking for someone new to chat with...",
     });
     
-    setTimeout(() => tryMatch(), 1000);
+    tryMatch(); // Immediate matching
   };
 
   // Message management
@@ -598,7 +602,7 @@ const Chat = () => {
     setMessageChannels(prev => [...prev, channel]);
   };
 
-  // Activity listeners for auto-logout
+  // Activity listeners for auto-logout and instant disconnect detection
   const addActivityListeners = () => {
     const handleActivity = () => {
       if (currentUser) {
@@ -609,16 +613,43 @@ const Chat = () => {
       }
     };
 
-    const handleBeforeUnload = () => setUserOffline();
+    // Immediate logout on browser close/tab close
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Use sendBeacon for guaranteed delivery during page unload
+      if (currentUser) {
+        navigator.sendBeacon(`https://gqfrnzlmporencfbofoi.supabase.co/rest/v1/casual_users?id=eq.${currentUser.id}`, 
+          JSON.stringify({ status: 'offline' }));
+      }
+      setUserOffline();
+    };
+
+    // Handle tab visibility changes
     const handleVisibilityChange = () => {
-      if (document.hidden) setUserOffline();
-      else if (currentUser) setUserOnline();
+      if (document.hidden) {
+        // User switched tabs or minimized - go offline after short delay
+        setTimeout(() => {
+          if (document.hidden && currentUser) {
+            setUserOffline();
+          }
+        }, 2000);
+      } else if (currentUser) {
+        setUserOnline();
+      }
+    };
+
+    // Page focus/blur for more reliable disconnect detection
+    const handlePageBlur = () => setUserOffline();
+    const handlePageFocus = () => {
+      if (currentUser) setUserOnline();
     };
 
     // Add listeners
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('unload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handlePageBlur);
+    window.addEventListener('focus', handlePageFocus);
     document.addEventListener('mousedown', handleActivity);
     document.addEventListener('keypress', handleActivity);
     document.addEventListener('touchstart', handleActivity);
@@ -627,7 +658,10 @@ const Chat = () => {
     (window as any)._chatActivityCleanup = () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('unload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handlePageBlur);
+      window.removeEventListener('focus', handlePageFocus);
       document.removeEventListener('mousedown', handleActivity);
       document.removeEventListener('keypress', handleActivity);
       document.removeEventListener('touchstart', handleActivity);
@@ -638,7 +672,14 @@ const Chat = () => {
     const resetInactivityTimer = () => {
       clearTimeout(inactivityTimeout);
       inactivityTimeout = setTimeout(() => {
-        if (currentUser) setUserOffline();
+        if (currentUser) {
+          setUserOffline();
+          toast({
+            title: "You've been logged out",
+            description: "Due to inactivity, you've been logged out.",
+            variant: "destructive"
+          });
+        }
       }, 4 * 60 * 1000);
     };
 

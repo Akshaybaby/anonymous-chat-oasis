@@ -37,24 +37,25 @@ const Index = () => {
 
       <div className="max-w-7xl mx-auto px-4 py-4 sm:py-8">
         {/* Start Chatting CTA - Mobile Optimized Top Section */}
-        <div className="text-center mb-8 sm:mb-12">
-          <div className="bg-gradient-to-r from-primary/10 to-secondary/10 rounded-2xl p-6 sm:p-8 mb-8">
-            <h2 className="text-3xl sm:text-4xl font-bold mb-4 tracking-tight">
+        {/* Mobile-Optimized Start Chatting CTA - Top Priority */}
+        <div className="mb-8 sm:mb-12">
+          <div className="bg-gradient-to-r from-primary/10 to-secondary/10 rounded-2xl p-4 sm:p-8 mb-8">
+            <h2 className="text-2xl sm:text-4xl font-bold mb-4 tracking-tight text-center">
               Start Chatting <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">Now!</span>
             </h2>
-            <p className="text-lg sm:text-xl text-muted-foreground mb-6 max-w-2xl mx-auto">
+            <p className="text-base sm:text-xl text-muted-foreground mb-6 max-w-2xl mx-auto text-center">
               Connect instantly with strangers worldwide. Private one-to-one conversations or group chat rooms.
             </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
-              <Link to="/chat" className="w-full sm:w-auto">
-                <Button variant="light-blue" size="lg" className="text-lg px-8 py-6 gap-3 w-full sm:w-auto min-w-[200px]">
-                  <MessageCircle className="w-6 h-6" />
+            <div className="flex flex-col gap-3 justify-center items-center max-w-sm mx-auto">
+              <Link to="/chat" className="w-full">
+                <Button variant="light-blue" size="lg" className="text-base sm:text-lg px-6 sm:px-8 py-4 sm:py-6 gap-3 w-full">
+                  <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
                   Start Private Chat
                 </Button>
               </Link>
-              <Link to="/chat" className="w-full sm:w-auto">
-                <Button variant="outline" size="lg" className="text-lg px-8 py-6 gap-3 w-full sm:w-auto min-w-[200px]">
-                  <Users className="w-6 h-6" />
+              <Link to="/chat" className="w-full">
+                <Button variant="outline" size="lg" className="text-base sm:text-lg px-6 sm:px-8 py-4 sm:py-6 gap-3 w-full">
+                  <Users className="w-5 h-5 sm:w-6 sm:h-6" />
                   Join Chat Rooms
                 </Button>
               </Link>
