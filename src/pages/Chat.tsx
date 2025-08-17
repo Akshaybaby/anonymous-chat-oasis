@@ -78,6 +78,13 @@ const Chat = () => {
   const [messageChannels, setMessageChannels] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+  // existing states…
+  const [messages, setMessages] = useState<any[]>([]);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  // ✅ Add this new state for tracking presence
+  const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
+
 
   const avatarColors = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
