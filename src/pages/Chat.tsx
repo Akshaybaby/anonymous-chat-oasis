@@ -93,8 +93,7 @@ const Chat = () => {
       setUserOnline();
       subscribeToUserPresence();
       subscribeToMatchingEvents();
-      // Start matching immediately when user comes online
-      setTimeout(startMatching, 500); // Small delay to ensure subscriptions are ready
+      startMatching();
       addActivityListeners();
       
       return () => {
@@ -235,17 +234,12 @@ const Chat = () => {
       .on(
         'postgres_changes',
         {
-          event: '*',
+          event: 'UPDATE',
           schema: 'public',
           table: 'casual_users'
         },
         (payload) => {
-          console.log('User status change:', payload);
-          if (payload.eventType === 'UPDATE') {
-            handleUserStatusChange(payload.new as CasualUser);
-          } else if (payload.eventType === 'INSERT') {
-            handleNewUserJoined(payload.new as CasualUser);
-          }
+          handleUserStatusChange(payload.new as CasualUser);
         }
       )
       .subscribe();
@@ -253,26 +247,27 @@ const Chat = () => {
     setUserPresenceChannel(channel);
   };
 
-  // Subscribe to direct chat creation for both parties
+  // Subscribe to new user insertions for instant matching
   const subscribeToMatchingEvents = () => {
     if (!currentUser) return;
 
     const channel = supabase
-      .channel('direct-chats-events')
+      .channel('matching-events')
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
-          table: 'direct_chats'
+          table: 'casual_users'
         },
         (payload) => {
-          const newChat = payload.new as DirectChat;
-          console.log('New direct chat created:', newChat);
-          // If this chat involves the current user, set it up
-          if ((newChat.user1_id === currentUser?.id || newChat.user2_id === currentUser?.id) && 
-              !currentDirectChat) {
-            handleNewDirectChat(newChat);
+          const newUser = payload.new as CasualUser;
+          // If a new user joins and we need a match, try to connect
+          if (newUser.status === 'available' && 
+              !currentDirectChat && 
+              !isSearchingForMatch &&
+              newUser.id !== currentUser?.id) {
+            setTimeout(() => tryMatch(), 100); // Small delay to avoid race conditions
           }
         }
       )
@@ -286,54 +281,13 @@ const Chat = () => {
     if (currentChatPartner && user.id === currentChatPartner.id && user.status === 'offline') {
       handlePartnerDisconnect();
     }
-  };
-
-  const handleNewUserJoined = (user: CasualUser) => {
-    console.log('New user joined:', user);
-    // If a new user joins and we need a match, try to connect immediately
+    
+    // If a user becomes available and we need a match, try to connect immediately
     if (user.status === 'available' && 
         !currentDirectChat && 
         !isSearchingForMatch &&
         user.id !== currentUser?.id) {
-      setTimeout(() => tryMatch(), 200); // Small delay to avoid race conditions
-    }
-  };
-
-  const handleNewDirectChat = async (chat: DirectChat) => {
-    console.log('Handling new direct chat:', chat);
-    if (!currentUser) return;
-
-    let partner: CasualUser | null = null;
-    
-    if (chat.user1_id === currentUser.id) {
-      // We are user1, partner is user2
-      const { data } = await supabase
-        .from('casual_users')
-        .select('*')
-        .eq('id', chat.user2_id)
-        .single();
-      partner = data;
-    } else if (chat.user2_id === currentUser.id) {
-      // We are user2, partner is user1  
-      const { data } = await supabase
-        .from('casual_users')
-        .select('*')
-        .eq('id', chat.user1_id)
-        .single();
-      partner = data;
-    }
-
-    if (partner) {
-      setCurrentChatPartner(partner);
-      setCurrentDirectChat(chat);
-      setDirectMessages([]);
-      setActiveTab('direct');
-      setIsSearchingForMatch(false);
-      
-      toast({
-        title: "Connected!",
-        description: `You're now chatting with ${partner.username}`,
-      });
+      setTimeout(() => tryMatch(), 100); // Small delay to avoid race conditions
     }
   };
 
@@ -357,27 +311,24 @@ const Chat = () => {
     startMatching();
   };
 
-  // Matching system - atomic operations for instant matching
+  // Matching system - no timeouts, immediate real-time matching
   const startMatching = () => {
     if (!currentUser || currentDirectChat) return;
-    console.log('Starting matching for user:', currentUser.username);
     tryMatch(); // Immediate matching
   };
 
   const tryMatch = async () => {
     if (!currentUser || currentDirectChat || isSearchingForMatch) return;
     
-    console.log('Trying to match user:', currentUser.username);
     setIsSearchingForMatch(true);
     
     try {
-      // Use atomic transaction to find and match users safely
+      // Find available users for random matching
       const { data: availableUsers, error } = await supabase
         .from('casual_users')
         .select('*')
         .eq('status', 'available')
-        .neq('id', currentUser.id)
-        .limit(10); // Limit to prevent too many options
+        .neq('id', currentUser.id);
       
       if (error) {
         console.error('Error finding users:', error);
@@ -386,35 +337,29 @@ const Chat = () => {
       }
       
       if (!availableUsers || availableUsers.length === 0) {
-        console.log('No available users found, waiting...');
         setIsSearchingForMatch(false);
         return;
       }
-      
-      console.log('Found available users:', availableUsers.length);
       
       // Random matching - pick a random available user
       const randomIndex = Math.floor(Math.random() * availableUsers.length);
       const matchUser = availableUsers[randomIndex];
       
-      console.log('Attempting to match with:', matchUser.username);
-      
-      // Use atomic matching function to prevent race conditions
-      const { data: matchSuccess, error: matchError } = await (supabase as any)
-        .rpc('match_users', {
-          user1_id: currentUser.id,
-          user2_id: matchUser.id
-        });
+      // Set both users to matched status simultaneously
+      const [userUpdate, matchUpdate] = await Promise.allSettled([
+        setUserMatched(),
+        supabase
+          .from('casual_users')
+          .update({ status: 'matched' })
+          .eq('id', matchUser.id)
+      ]);
 
-      if (matchError || !matchSuccess) {
-        console.log('Failed to match with user (already matched or unavailable):', matchUser.username);
+      // Check if both updates succeeded
+      if (userUpdate.status === 'rejected' || matchUpdate.status === 'rejected') {
+        console.error('Failed to update user statuses');
         setIsSearchingForMatch(false);
-        // Try again immediately with different user
-        setTimeout(tryMatch, 100);
         return;
       }
-
-      console.log('Successfully matched users via atomic function');
       
       // Create direct chat
       const { data: chatData, error: chatError } = await supabase
@@ -434,10 +379,16 @@ const Chat = () => {
         return;
       }
 
-      console.log('Successfully matched and created chat:', chatData);
+      setCurrentChatPartner(matchUser);
+      setCurrentDirectChat(chatData);
+      setDirectMessages([]);
+      setActiveTab('direct');
+      setIsSearchingForMatch(false);
       
-      // The handleNewDirectChat will be triggered by the realtime subscription
-      // for both users, so we don't need to manually set the state here
+      toast({
+        title: "Connected!",
+        description: `You're now chatting with ${matchUser.username}`,
+      });
       
     } catch (error) {
       console.error('Error in matching:', error);
@@ -659,8 +610,6 @@ const Chat = () => {
   const subscribeToDirectMessages = () => {
     if (!currentDirectChat) return;
 
-    console.log('Subscribing to direct messages for chat:', currentDirectChat.id);
-
     const channel = supabase
       .channel(`direct-chat-${currentDirectChat.id}`)
       .on(
@@ -672,20 +621,10 @@ const Chat = () => {
           filter: `chat_id=eq.${currentDirectChat.id}`
         },
         (payload) => {
-          console.log('New direct message received:', payload.new);
-          const newMessage = payload.new as DirectMessage;
-          setDirectMessages(prev => {
-            // Avoid duplicates by checking if message already exists
-            if (prev.find(msg => msg.id === newMessage.id)) {
-              return prev;
-            }
-            return [...prev, newMessage];
-          });
+          setDirectMessages(prev => [...prev, payload.new as DirectMessage]);
         }
       )
-      .subscribe((status) => {
-        console.log('Direct messages subscription status:', status);
-      });
+      .subscribe();
 
     setMessageChannels(prev => [...prev, channel]);
   };
