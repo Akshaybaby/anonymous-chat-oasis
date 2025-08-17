@@ -83,8 +83,6 @@ const Chat = () => {
   const [isConnected, setIsConnected] = useState(false);
 
   // ✅ Add this new state for tracking presence
-  const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
-
 
   const avatarColors = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
