@@ -15,6 +15,7 @@ interface CasualUser {
   username: string;
   avatar_color: string;
   status: string;
+  last_active?: string;
 }
 
 interface DirectMessage {
@@ -47,7 +48,10 @@ const Chat = () => {
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
   const [userPresenceChannel, setUserPresenceChannel] = useState<any>(null);
   const [messageChannels, setMessageChannels] = useState<any[]>([]);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'searching'>('disconnected');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const matchingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { toast } = useToast();
 
   const avatarColors = [
@@ -61,13 +65,18 @@ const Chat = () => {
       setUserOnline();
       subscribeToUserPresence();
       subscribeToMatchingEvents();
+      startHeartbeat();
       startMatching();
       addActivityListeners();
       
       return () => {
         setUserOffline();
         cleanupAllChannels();
+        stopHeartbeat();
         removeActivityListeners();
+        if (matchingTimeoutRef.current) {
+          clearTimeout(matchingTimeoutRef.current);
+        }
       };
     }
   }, [currentUser]);
@@ -79,6 +88,7 @@ const Chat = () => {
     if (currentUser && currentDirectChat) {
       loadDirectMessages();
       subscribeToDirectMessages();
+      subscribeToPartnerStatus();
     }
   }, [currentDirectChat, currentUser]);
 
@@ -89,6 +99,27 @@ const Chat = () => {
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  // Heartbeat system for real-time presence
+  const startHeartbeat = () => {
+    if (heartbeatIntervalRef.current) return;
+    
+    heartbeatIntervalRef.current = setInterval(async () => {
+      if (currentUser) {
+        await supabase
+          .from('casual_users')
+          .update({ last_active: new Date().toISOString() })
+          .eq('id', currentUser.id);
+      }
+    }, 10000); // Update every 10 seconds
+  };
+
+  const stopHeartbeat = () => {
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
   };
 
   const createUser = async () => {
@@ -109,7 +140,8 @@ const Chat = () => {
       .insert({
         username: username.trim(),
         avatar_color: avatarColor,
-        status: 'available'
+        status: 'available',
+        last_active: new Date().toISOString()
       })
       .select()
       .single();
@@ -129,7 +161,7 @@ const Chat = () => {
     setIsJoining(false);
   };
 
-  // User presence management
+  // Enhanced user presence management
   const setUserOnline = async () => {
     if (!currentUser) return;
     
@@ -156,7 +188,10 @@ const Chat = () => {
     // Immediately set user offline
     const { error } = await supabase
       .from('casual_users')
-      .update({ status: 'offline' })
+      .update({ 
+        status: 'offline',
+        last_active: new Date().toISOString()
+      })
       .eq('id', currentUser.id);
     
     if (error) console.error('Error setting user offline:', error);
@@ -167,11 +202,14 @@ const Chat = () => {
     
     await supabase
       .from('casual_users')
-      .update({ status: 'matched' })
+      .update({ 
+        status: 'matched',
+        last_active: new Date().toISOString()
+      })
       .eq('id', currentUser.id);
   };
 
-  // Realtime user presence subscription
+  // Real-time user presence subscription with enhanced monitoring
   const subscribeToUserPresence = () => {
     if (!currentUser || userPresenceChannel) return;
 
@@ -180,17 +218,54 @@ const Chat = () => {
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          event: '*',
           schema: 'public',
           table: 'casual_users'
         },
         (payload) => {
-          handleUserStatusChange(payload.new as CasualUser);
+          if (payload.eventType === 'UPDATE' || payload.eventType === 'DELETE') {
+            handleUserStatusChange(payload.new as CasualUser);
+          } else if (payload.eventType === 'INSERT') {
+            const newUser = payload.new as CasualUser;
+            if (newUser.status === 'available' && 
+                !currentDirectChat && 
+                !isSearchingForMatch &&
+                newUser.id !== currentUser?.id) {
+              // Immediate matching when new user joins
+              tryInstantMatch();
+            }
+          }
         }
       )
       .subscribe();
 
     setUserPresenceChannel(channel);
+  };
+
+  // Subscribe to partner's status changes
+  const subscribeToPartnerStatus = () => {
+    if (!currentChatPartner || !currentDirectChat) return;
+
+    const channel = supabase
+      .channel(`partner-status-${currentChatPartner.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'casual_users',
+          filter: `id=eq.${currentChatPartner.id}`
+        },
+        (payload) => {
+          const updatedUser = payload.new as CasualUser;
+          if (updatedUser.status === 'offline' || updatedUser.status === 'available') {
+            handlePartnerDisconnect();
+          }
+        }
+      )
+      .subscribe();
+
+    setMessageChannels(prev => [...prev, channel]);
   };
 
   // Subscribe to new user insertions for instant matching
@@ -208,12 +283,11 @@ const Chat = () => {
         },
         (payload) => {
           const newUser = payload.new as CasualUser;
-          // If a new user joins and we need a match, try to connect
           if (newUser.status === 'available' && 
               !currentDirectChat && 
               !isSearchingForMatch &&
               newUser.id !== currentUser?.id) {
-            setTimeout(() => tryMatch(), 100); // Small delay to avoid race conditions
+            tryInstantMatch();
           }
         }
       )
@@ -224,7 +298,8 @@ const Chat = () => {
 
   const handleUserStatusChange = (user: CasualUser) => {
     // If our current partner went offline, handle disconnection
-    if (currentChatPartner && user.id === currentChatPartner.id && user.status === 'offline') {
+    if (currentChatPartner && user.id === currentChatPartner.id && 
+        (user.status === 'offline' || user.status === 'available')) {
       handlePartnerDisconnect();
     }
     
@@ -233,7 +308,7 @@ const Chat = () => {
         !currentDirectChat && 
         !isSearchingForMatch &&
         user.id !== currentUser?.id) {
-      setTimeout(() => tryMatch(), 100); // Small delay to avoid race conditions
+      tryInstantMatch();
     }
   };
 
@@ -241,6 +316,10 @@ const Chat = () => {
     if (!currentChatPartner) return;
     
     console.log('Partner disconnected, finding new match...');
+    setConnectionStatus('disconnected');
+    
+    const partnerName = currentChatPartner.username;
+    
     setCurrentChatPartner(null);
     setCurrentDirectChat(null);
     setDirectMessages([]);
@@ -250,60 +329,72 @@ const Chat = () => {
     
     toast({
       title: "Partner disconnected",
-      description: "Finding you a new person to chat with...",
+      description: `${partnerName} left the chat. Finding you someone new...`,
     });
     
-    // Start matching immediately - no delay
-    startMatching();
+    // Start matching immediately
+    setConnectionStatus('searching');
+    tryInstantMatch();
   };
 
-  // Matching system - no timeouts, immediate real-time matching
+  // Enhanced matching system with instant connections
   const startMatching = () => {
     if (!currentUser || currentDirectChat) return;
-    tryMatch(); // Immediate matching
+    setConnectionStatus('searching');
+    setIsSearchingForMatch(true);
+    tryInstantMatch();
   };
 
-  const tryMatch = async () => {
+  const tryInstantMatch = async () => {
     if (!currentUser || currentDirectChat || isSearchingForMatch) return;
     
     setIsSearchingForMatch(true);
+    setConnectionStatus('connecting');
     
     try {
-      // Use the atomic matching function
+      // Get available users with more recent activity
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      
       const { data: availableUsers, error } = await supabase
         .from('casual_users')
         .select('*')
         .eq('status', 'available')
-        .neq('id', currentUser.id);
+        .neq('id', currentUser.id)
+        .gte('last_active', fiveMinutesAgo)
+        .order('last_active', { ascending: false });
       
       if (error) {
         console.error('Error finding users:', error);
         setIsSearchingForMatch(false);
+        setConnectionStatus('searching');
+        // Retry after 2 seconds
+        matchingTimeoutRef.current = setTimeout(() => tryInstantMatch(), 2000);
         return;
       }
       
       if (!availableUsers || availableUsers.length === 0) {
         setIsSearchingForMatch(false);
+        setConnectionStatus('searching');
+        // Keep trying every 3 seconds
+        matchingTimeoutRef.current = setTimeout(() => tryInstantMatch(), 3000);
         return;
       }
       
-      // Random matching - pick a random available user
-      const randomIndex = Math.floor(Math.random() * availableUsers.length);
-      const matchUser = availableUsers[randomIndex];
+      // Pick the most recently active user for better connection quality
+      const matchUser = availableUsers[0];
       
-      // Set both users to matched status simultaneously
-      const [userUpdate, matchUpdate] = await Promise.allSettled([
-        setUserMatched(),
-        supabase
-          .from('casual_users')
-          .update({ status: 'matched' })
-          .eq('id', matchUser.id)
-      ]);
+      // Atomic update - set both users to matched status
+      const { error: updateError } = await supabase.rpc('match_users', {
+        user1_id: currentUser.id,
+        user2_id: matchUser.id
+      });
 
-      // Check if both updates succeeded
-      if (userUpdate.status === 'rejected' || matchUpdate.status === 'rejected') {
-        console.error('Failed to update user statuses');
+      if (updateError) {
+        console.error('Failed to match users atomically:', updateError);
         setIsSearchingForMatch(false);
+        setConnectionStatus('searching');
+        // Retry with different user
+        matchingTimeoutRef.current = setTimeout(() => tryInstantMatch(), 1000);
         return;
       }
       
@@ -314,14 +405,22 @@ const Chat = () => {
           user1_id: currentUser.id,
           user2_id: matchUser.id,
           user1_username: currentUser.username,
-          user2_username: matchUser.username
+          user2_username: matchUser.username,
+          last_message_at: new Date().toISOString()
         })
         .select()
         .single();
 
       if (chatError) {
         console.error('Error creating chat:', chatError);
+        // Revert user statuses
+        await Promise.all([
+          supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id),
+          supabase.from('casual_users').update({ status: 'available' }).eq('id', matchUser.id)
+        ]);
         setIsSearchingForMatch(false);
+        setConnectionStatus('searching');
+        matchingTimeoutRef.current = setTimeout(() => tryInstantMatch(), 1000);
         return;
       }
 
@@ -329,6 +428,7 @@ const Chat = () => {
       setCurrentDirectChat(chatData);
       setDirectMessages([]);
       setIsSearchingForMatch(false);
+      setConnectionStatus('connected');
       
       toast({
         title: "Connected!",
@@ -338,11 +438,15 @@ const Chat = () => {
     } catch (error) {
       console.error('Error in matching:', error);
       setIsSearchingForMatch(false);
+      setConnectionStatus('searching');
+      matchingTimeoutRef.current = setTimeout(() => tryInstantMatch(), 2000);
     }
   };
 
   const skipToNextUser = async () => {
     if (!currentChatPartner) return;
+    
+    setConnectionStatus('searching');
     
     // Set partner back to available
     await supabase
@@ -352,28 +456,30 @@ const Chat = () => {
     
     await setUserOnline();
     
+    const partnerName = currentChatPartner.username;
+    
     setCurrentChatPartner(null);
     setCurrentDirectChat(null);
     setDirectMessages([]);
     
     toast({
       title: "Finding new person",
-      description: "Looking for someone new to chat with...",
+      description: `Left chat with ${partnerName}. Looking for someone new...`,
     });
     
-    tryMatch(); // Immediate matching
+    // Immediate matching
+    tryInstantMatch();
   };
 
   const loadDirectMessages = async () => {
     if (!currentDirectChat) return;
     
-    // Load existing messages from this chat
     const { data, error } = await supabase
       .from('direct_messages')
       .select('*')
       .eq('chat_id', currentDirectChat.id)
       .order('created_at', { ascending: true })
-      .limit(50);
+      .limit(100);
 
     if (error) {
       console.error('Error loading direct messages:', error);
@@ -386,6 +492,19 @@ const Chat = () => {
   const sendMessage = async () => {
     if (!newMessage.trim() || !currentUser || !currentDirectChat) return;
 
+    const optimisticMessage: DirectMessage = {
+      id: `temp-${Date.now()}`,
+      content: newMessage.trim(),
+      sender_id: currentUser.id,
+      sender_username: currentUser.username,
+      created_at: new Date().toISOString(),
+      message_type: 'text'
+    };
+
+    // Optimistic update
+    setDirectMessages(prev => [...prev, optimisticMessage]);
+    setNewMessage('');
+
     const { error } = await supabase
       .from('direct_messages')
       .insert({
@@ -397,6 +516,8 @@ const Chat = () => {
 
     if (error) {
       console.error('Error sending direct message:', error);
+      // Remove optimistic message on error
+      setDirectMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
       toast({
         title: "Error",
         description: "Failed to send message. Please try again.",
@@ -410,8 +531,6 @@ const Chat = () => {
       .from('direct_chats')
       .update({ last_message_at: new Date().toISOString() })
       .eq('id', currentDirectChat.id);
-
-    setNewMessage('');
   };
 
   const sendMediaMessage = async (mediaUrl: string, mediaType: 'image' | 'video') => {
@@ -453,7 +572,23 @@ const Chat = () => {
           filter: `chat_id=eq.${currentDirectChat.id}`
         },
         (payload) => {
-          setDirectMessages(prev => [...prev, payload.new as DirectMessage]);
+          const newMessage = payload.new as DirectMessage;
+          // Only add message if it's not from current user (to avoid duplicates with optimistic updates)
+          if (newMessage.sender_id !== currentUser?.id) {
+            setDirectMessages(prev => [...prev, newMessage]);
+          } else {
+            // Replace optimistic message with real message
+            setDirectMessages(prev => 
+              prev.map(msg => 
+                msg.id.startsWith('temp-') && msg.sender_id === newMessage.sender_id
+                  ? newMessage 
+                  : msg
+              ).filter((msg, index, arr) => 
+                // Remove duplicates
+                arr.findIndex(m => m.id === msg.id) === index
+              )
+            );
+          }
         }
       )
       .subscribe();
@@ -461,7 +596,7 @@ const Chat = () => {
     setMessageChannels(prev => [...prev, channel]);
   };
 
-  // Activity listeners for auto-logout and instant disconnect detection
+  // Enhanced activity listeners
   const addActivityListeners = () => {
     const handleActivity = () => {
       if (currentUser) {
@@ -472,41 +607,43 @@ const Chat = () => {
       }
     };
 
-    // Immediate logout on browser close/tab close
     const handleBeforeUnload = () => {
       if (currentUser) {
+        // Use sendBeacon for more reliable offline status
+        navigator.sendBeacon('/api/user-offline', JSON.stringify({ userId: currentUser.id }));
         setUserOffline();
       }
     };
 
-    // Handle tab visibility changes
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        // User switched tabs or minimized - go offline after short delay
+        // User switched tabs - go offline after short delay
         setTimeout(() => {
           if (document.hidden && currentUser) {
             setUserOffline();
           }
-        }, 2000);
+        }, 5000); // Increased to 5 seconds
       } else if (currentUser) {
         setUserOnline();
       }
     };
 
-    // Add listeners
+    // More comprehensive activity tracking
+    const events = ['mousedown', 'keypress', 'touchstart', 'scroll', 'mousemove'];
+    events.forEach(event => {
+      document.addEventListener(event, handleActivity, { passive: true });
+    });
+
     window.addEventListener('beforeunload', handleBeforeUnload);
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    document.addEventListener('mousedown', handleActivity);
-    document.addEventListener('keypress', handleActivity);
-    document.addEventListener('touchstart', handleActivity);
 
     // Store cleanup function
     (window as any)._chatActivityCleanup = () => {
+      events.forEach(event => {
+        document.removeEventListener(event, handleActivity);
+      });
       window.removeEventListener('beforeunload', handleBeforeUnload);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      document.removeEventListener('mousedown', handleActivity);
-      document.removeEventListener('keypress', handleActivity);
-      document.removeEventListener('touchstart', handleActivity);
     };
   };
 
@@ -530,6 +667,37 @@ const Chat = () => {
       supabase.removeChannel(channel);
     });
     setMessageChannels([]);
+  };
+
+  // Connection status indicator
+  const getConnectionStatusText = () => {
+    switch (connectionStatus) {
+      case 'connecting':
+        return 'Connecting...';
+      case 'connected':
+        return 'Connected';
+      case 'searching':
+        return 'Finding someone...';
+      case 'disconnected':
+        return 'Disconnected';
+      default:
+        return 'Ready';
+    }
+  };
+
+  const getConnectionStatusColor = () => {
+    switch (connectionStatus) {
+      case 'connecting':
+        return 'text-yellow-500';
+      case 'connected':
+        return 'text-green-500';
+      case 'searching':
+        return 'text-blue-500';
+      case 'disconnected':
+        return 'text-red-500';
+      default:
+        return 'text-gray-500';
+    }
   };
 
   if (!currentUser) {
@@ -636,7 +804,22 @@ const Chat = () => {
               <CardContent className="p-4">
                 <h3 className="font-semibold mb-4">Random Chat</h3>
                 <div className="space-y-3">
-                  {isSearchingForMatch && (
+                  {/* Connection Status */}
+                  <div className="p-2 bg-muted rounded-lg">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${
+                        connectionStatus === 'connected' ? 'bg-green-500' :
+                        connectionStatus === 'connecting' ? 'bg-yellow-500 animate-pulse' :
+                        connectionStatus === 'searching' ? 'bg-blue-500 animate-pulse' :
+                        'bg-red-500'
+                      }`}></div>
+                      <span className={`text-sm font-medium ${getConnectionStatusColor()}`}>
+                        {getConnectionStatusText()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {(isSearchingForMatch || connectionStatus === 'searching') && (
                     <div className="text-center">
                       <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-3"></div>
                       <p className="text-sm text-muted-foreground">Finding someone to chat with...</p>
@@ -660,7 +843,7 @@ const Chat = () => {
                     </div>
                   )}
                   
-                  {!currentDirectChat && !isSearchingForMatch && (
+                  {!currentDirectChat && !isSearchingForMatch && connectionStatus !== 'searching' && (
                     <div className="text-center p-3 bg-muted rounded-lg">
                       <p className="text-sm text-muted-foreground">
                         Looking for someone to chat with...
@@ -682,7 +865,9 @@ const Chat = () => {
                       <h2 className="font-semibold text-xl">
                         Chatting with: {currentChatPartner?.username}
                       </h2>
-                      <p className="text-sm text-muted-foreground">Random conversation</p>
+                      <p className="text-sm text-muted-foreground">
+                        Random conversation • {getConnectionStatusText()}
+                      </p>
                     </div>
                     <Button 
                       onClick={skipToNextUser}
@@ -748,13 +933,20 @@ const Chat = () => {
               <Card className="h-[500px] sm:h-[600px] flex items-center justify-center">
                 <div className="text-center">
                   <MessageCircle className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-                  <h3 className="text-lg font-semibold mb-2">No Active Chat</h3>
+                  <h3 className="text-lg font-semibold mb-2">
+                    {connectionStatus === 'searching' ? 'Finding Someone...' : 'No Active Chat'}
+                  </h3>
                   <p className="text-muted-foreground">
-                    {isSearchingForMatch 
+                    {isSearchingForMatch || connectionStatus === 'searching'
                       ? "We're finding someone for you to chat with..." 
                       : "Waiting to match you with someone..."
                     }
                   </p>
+                  {(isSearchingForMatch || connectionStatus === 'searching') && (
+                    <div className="mt-4">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+                    </div>
+                  )}
                 </div>
               </Card>
             )}
