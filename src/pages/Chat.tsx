@@ -9,7 +9,6 @@ import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { MediaUpload } from '@/components/MediaUpload';
 import { MessageRenderer } from '@/components/MessageRenderer';
-import { Helmet } from 'react-helmet-async';
 
 interface CasualUser {
   id: string;
