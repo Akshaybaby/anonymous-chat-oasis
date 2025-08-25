@@ -53,6 +53,7 @@ const Chat = () => {
     directMessages: null as any,
     partnerStatus: null as any,
     matching: null as any,
+    globalMessages: null as any,
   });
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -304,10 +305,9 @@ const Chat = () => {
   const setupDirectMessageSubscription = useCallback(() => {
     if (!currentDirectChat || channelsRef.current.directMessages) return;
 
+    // Enhanced real-time subscription with immediate updates
     channelsRef.current.directMessages = supabase
-      .channel(`direct-messages-${currentDirectChat.id}`, { 
-        config: { broadcast: { self: false } } 
-      })
+      .channel(`direct-messages-${currentDirectChat.id}`)
       .on(
         'postgres_changes',
         {
@@ -321,23 +321,57 @@ const Chat = () => {
           
           try {
             const newMessage = payload.new as DirectMessage;
+            console.log('Real-time message received:', newMessage);
             
+            // Immediate state update for real-time experience
             setDirectMessages(prev => {
+              // Prevent duplicates
               if (prev.some(msg => msg.id === newMessage.id)) return prev;
               
-              const newMessages = [...prev, newMessage];
-              return newMessages.sort((a, b) => 
+              // Add new message and sort chronologically
+              const updatedMessages = [...prev, newMessage].sort((a, b) => 
                 new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
               );
+              
+              return updatedMessages;
             });
             
-            scrollToBottom();
+            // Auto-scroll to new message
+            requestAnimationFrame(() => scrollToBottom());
+            
           } catch (error) {
-            console.error('Error handling new message:', error);
+            console.error('Error handling real-time message:', error);
           }
         }
       )
-      .subscribe();
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public', 
+          table: 'direct_messages',
+          filter: `chat_id=eq.${currentDirectChat.id}`
+        },
+        (payload) => {
+          if (isUnmountingRef.current) return;
+          
+          try {
+            const updatedMessage = payload.new as DirectMessage;
+            
+            setDirectMessages(prev =>
+              prev.map(msg => msg.id === updatedMessage.id ? updatedMessage : msg)
+            );
+          } catch (error) {
+            console.error('Error handling message update:', error);
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log(`Direct messages subscription status: ${status}`);
+        if (status === 'SUBSCRIBED') {
+          console.log('Successfully subscribed to direct messages');
+        }
+      });
   }, [currentDirectChat, scrollToBottom]);
 
   const setupPartnerStatusSubscription = useCallback(() => {
@@ -399,55 +433,64 @@ const Chat = () => {
     setTimeout(() => startMatching(), 500);
   }, [currentUser, toast, startMatching]);
 
-  // Ultra-fast message sending with instant UI updates
+  // Ultra-fast message sending with enhanced real-time updates
   const sendMessage = useCallback(async () => {
     if (!newMessage.trim() || !currentUser || !currentDirectChat) return;
 
     const messageContent = newMessage.trim();
     const tempId = `temp-${Date.now()}-${Math.random()}`;
+    const now = new Date().toISOString();
+    
     const tempMessage: DirectMessage = {
       id: tempId,
       content: messageContent,
       sender_username: currentUser.username,
       sender_id: currentUser.id,
-      created_at: new Date().toISOString(),
+      created_at: now,
       message_type: 'text'
     };
 
-    // Instant UI update
+    // Instant UI update for immediate feedback
     setDirectMessages(prev => [...prev, tempMessage]);
     setNewMessage('');
-    scrollToBottom();
+    
+    // Immediate scroll
+    requestAnimationFrame(() => scrollToBottom());
 
     try {
+      // Send to database
       const { data, error } = await supabase
         .from('direct_messages')
         .insert({
           chat_id: currentDirectChat.id,
           sender_id: currentUser.id,
           sender_username: currentUser.username,
-          content: messageContent
+          content: messageContent,
+          created_at: now
         })
         .select()
         .single();
 
       if (error) throw error;
 
-      // Replace temp message with real message
+      // Replace temporary message with real one
       setDirectMessages(prev => 
         prev.map(msg => msg.id === tempId ? data : msg)
       );
 
-      // Update chat timestamp
+      // Update chat timestamp asynchronously
       supabase
         .from('direct_chats')
-        .update({ last_message_at: new Date().toISOString() })
+        .update({ last_message_at: now })
         .eq('id', currentDirectChat.id)
-        .then(null, console.error);
+        .then(null, (err) => console.error('Chat update error:', err));
+
+      console.log('Message sent successfully:', data);
 
     } catch (error) {
       console.error('Error sending message:', error);
       
+      // Remove failed message and restore input
       setDirectMessages(prev => prev.filter(msg => msg.id !== tempId));
       setNewMessage(messageContent);
       
@@ -514,11 +557,12 @@ const Chat = () => {
     }
   }, [currentUser, currentDirectChat, scrollToBottom, toast]);
 
-  // Main lifecycle management
+  // Main lifecycle management with enhanced real-time setup
   useEffect(() => {
     if (currentUser) {
       setUserOnline();
       setupRealtimeSubscriptions();
+      setupGlobalMessageSubscription();
       startHeartbeat();
       
       if (!currentDirectChat) {
@@ -538,7 +582,7 @@ const Chat = () => {
         }
       };
     }
-  }, [currentUser, currentDirectChat, setupRealtimeSubscriptions, startHeartbeat, startMatching]);
+  }, [currentUser, currentDirectChat, setupRealtimeSubscriptions, setupGlobalMessageSubscription, startHeartbeat, startMatching]);
 
   // Chat management
   useEffect(() => {
@@ -665,25 +709,77 @@ const Chat = () => {
     }
   };
 
+  // Enhanced message loading with real-time sync
   const loadDirectMessages = async () => {
     if (!currentDirectChat) return;
     
     try {
+      // Load messages with real-time ordering
       const { data, error } = await supabase
         .from('direct_messages')
         .select('*')
         .eq('chat_id', currentDirectChat.id)
         .order('created_at', { ascending: true })
-        .limit(50);
+        .limit(100);
 
       if (error) throw error;
       
+      console.log('Loaded direct messages:', data?.length || 0);
       setDirectMessages(data || []);
-      setTimeout(scrollToBottom, 50);
+      
+      // Scroll to bottom after loading
+      setTimeout(() => scrollToBottom(), 100);
+      
     } catch (error) {
       console.error('Error loading direct messages:', error);
     }
   };
+
+  // Setup global message monitoring for better real-time performance
+  const setupGlobalMessageSubscription = useCallback(() => {
+    if (channelsRef.current.globalMessages) return;
+
+    channelsRef.current.globalMessages = supabase
+      .channel('global-messages-monitor')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'direct_messages'
+        },
+        (payload) => {
+          if (isUnmountingRef.current) return;
+          
+          try {
+            // Only process if it's for current chat
+            if (currentDirectChat && payload.new?.chat_id === currentDirectChat.id) {
+              const newMessage = payload.new as DirectMessage;
+              
+              if (payload.eventType === 'INSERT') {
+                setDirectMessages(prev => {
+                  if (prev.some(msg => msg.id === newMessage.id)) return prev;
+                  
+                  const updated = [...prev, newMessage].sort((a, b) => 
+                    new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                  );
+                  
+                  // Trigger scroll after state update
+                  requestAnimationFrame(() => scrollToBottom());
+                  
+                  return updated;
+                });
+              }
+            }
+          } catch (error) {
+            console.error('Error in global message subscription:', error);
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log('Global messages subscription:', status);
+      });
+  }, [currentDirectChat, scrollToBottom]);
 
   // Activity listeners
   const addActivityListeners = () => {
@@ -760,6 +856,7 @@ const Chat = () => {
       directMessages: null,
       partnerStatus: null,
       matching: null,
+      globalMessages: null,
     };
   };
 
