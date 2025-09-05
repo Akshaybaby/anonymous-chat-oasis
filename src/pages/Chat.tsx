@@ -52,6 +52,7 @@ const Chat = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const messageChannelRef = useRef<any>(null);
   const matchingChannelRef = useRef<any>(null);
+  const userStatusChannelRef = useRef<any>(null);
   const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
   const matchingRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -67,6 +68,64 @@ const Chat = () => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, 100);
   }, []);
+
+  // Cleanup function to handle user logout
+  const cleanupUserSession = useCallback(async () => {
+    if (currentUser) {
+      try {
+        // Set user as offline and delete the user record
+        await supabase
+          .from('casual_users')
+          .delete()
+          .eq('id', currentUser.id);
+      } catch (error) {
+        console.error('Error cleaning up user session:', error);
+      }
+    }
+    
+    // Clear all intervals and channels
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+    if (matchingRef.current) {
+      clearInterval(matchingRef.current);
+      matchingRef.current = null;
+    }
+    
+    // Remove all channels
+    if (messageChannelRef.current) {
+      supabase.removeChannel(messageChannelRef.current);
+      messageChannelRef.current = null;
+    }
+    if (matchingChannelRef.current) {
+      supabase.removeChannel(matchingChannelRef.current);
+      matchingChannelRef.current = null;
+    }
+    if (userStatusChannelRef.current) {
+      supabase.removeChannel(userStatusChannelRef.current);
+      userStatusChannelRef.current = null;
+    }
+    
+    // Clear localStorage - no persistent session
+    localStorage.removeItem('casual_user');
+    localStorage.removeItem('current_chat');
+    localStorage.removeItem('chat_partner');
+  }, [currentUser]);
+
+  // Handle user going offline/leaving
+  const handleUserLeave = useCallback(async () => {
+    await cleanupUserSession();
+    
+    // Reset all state
+    setCurrentUser(null);
+    setCurrentDirectChat(null);
+    setCurrentChatPartner(null);
+    setDirectMessages([]);
+    setIsSearchingForMatch(false);
+    setUsername('');
+    setNewMessage('');
+  }, [cleanupUserSession]);
 
   // Load messages for current chat
   const loadMessages = useCallback(async () => {
@@ -90,6 +149,56 @@ const Chat = () => {
       console.error('Error in loadMessages:', err);
     }
   }, [currentDirectChat, scrollToBottom]);
+
+  // Setup user status monitoring (to detect partner leaving)
+  const setupUserStatusSubscription = useCallback(() => {
+    if (!currentChatPartner || userStatusChannelRef.current) return;
+
+    console.log('Setting up user status subscription for partner:', currentChatPartner.id);
+    
+    userStatusChannelRef.current = supabase
+      .channel(`user-status-${currentChatPartner.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'casual_users',
+          filter: `id=eq.${currentChatPartner.id}`
+        },
+        async () => {
+          console.log('Chat partner disconnected, finding new match...');
+          
+          // Partner left, clear current chat and find new match
+          setCurrentChatPartner(null);
+          setCurrentDirectChat(null);
+          setDirectMessages([]);
+          
+          // Clear localStorage
+          localStorage.removeItem('current_chat');
+          localStorage.removeItem('chat_partner');
+          
+          // Set current user back to available
+          if (currentUser) {
+            await supabase
+              .from('casual_users')
+              .update({ status: 'available' })
+              .eq('id', currentUser.id);
+          }
+          
+          toast({
+            title: "Partner disconnected",
+            description: "Your chat partner left. Finding someone new...",
+          });
+          
+          // Start looking for a new match
+          startMatching();
+        }
+      )
+      .subscribe((status) => {
+        console.log('User status subscription status:', status);
+      });
+  }, [currentChatPartner, currentUser, toast]);
 
   // Setup real-time message subscription
   const setupMessageSubscription = useCallback(() => {
@@ -160,7 +269,7 @@ const Chat = () => {
               setDirectMessages([]);
               setIsSearchingForMatch(false);
               
-              // Save to localStorage
+              // Save to localStorage (temporary during session)
               localStorage.setItem('current_chat', JSON.stringify(newChat));
               localStorage.setItem('chat_partner', JSON.stringify(partner));
               
@@ -299,7 +408,7 @@ const Chat = () => {
     }, 15000);
   }, [currentUser, currentDirectChat]);
 
-  // Create user
+  // Create user (fresh session each time)
   const createUser = async () => {
     if (!username.trim()) {
       toast({
@@ -328,6 +437,7 @@ const Chat = () => {
       if (error) throw error;
 
       setCurrentUser(data);
+      // Store temporarily during session only
       localStorage.setItem('casual_user', JSON.stringify(data));
       
     } catch (error) {
@@ -354,6 +464,12 @@ const Chat = () => {
         supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id),
         supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id)
       ]);
+      
+      // Clean up current chat
+      if (userStatusChannelRef.current) {
+        supabase.removeChannel(userStatusChannelRef.current);
+        userStatusChannelRef.current = null;
+      }
       
       setCurrentChatPartner(null);
       setCurrentDirectChat(null);
@@ -383,24 +499,51 @@ const Chat = () => {
       supabase.removeChannel(matchingChannelRef.current);
       matchingChannelRef.current = null;
     }
+    if (userStatusChannelRef.current) {
+      supabase.removeChannel(userStatusChannelRef.current);
+      userStatusChannelRef.current = null;
+    }
   }, []);
+
+  // Handle page visibility change and beforeunload
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // User switched away from the tab
+        handleUserLeave();
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      // User is closing/refreshing the page
+      if (currentUser) {
+        navigator.sendBeacon && navigator.sendBeacon('/api/user-leave', JSON.stringify({ userId: currentUser.id }));
+        cleanupUserSession();
+      }
+    };
+
+    const handleUnload = () => {
+      handleUserLeave();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('unload', handleUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('unload', handleUnload);
+    };
+  }, [currentUser, handleUserLeave, cleanupUserSession]);
 
   // Main effects
   useEffect(() => {
-    // Restore session
-    const savedUser = localStorage.getItem('casual_user');
-    const savedChat = localStorage.getItem('current_chat');
-    const savedPartner = localStorage.getItem('chat_partner');
-    
-    if (savedUser) {
-      const user = JSON.parse(savedUser);
-      setCurrentUser(user);
-      
-      if (savedChat && savedPartner) {
-        setCurrentDirectChat(JSON.parse(savedChat));
-        setCurrentChatPartner(JSON.parse(savedPartner));
-      }
-    }
+    // Don't restore session - always start fresh
+    // Clear any existing localStorage data on component mount
+    localStorage.removeItem('casual_user');
+    localStorage.removeItem('current_chat');
+    localStorage.removeItem('chat_partner');
   }, []);
 
   useEffect(() => {
@@ -433,19 +576,31 @@ const Chat = () => {
     if (currentDirectChat) {
       loadMessages();
       setupMessageSubscription();
+      setupUserStatusSubscription();
       
       return () => {
         if (messageChannelRef.current) {
           supabase.removeChannel(messageChannelRef.current);
           messageChannelRef.current = null;
         }
+        if (userStatusChannelRef.current) {
+          supabase.removeChannel(userStatusChannelRef.current);
+          userStatusChannelRef.current = null;
+        }
       };
     }
-  }, [currentDirectChat, loadMessages, setupMessageSubscription]);
+  }, [currentDirectChat, loadMessages, setupMessageSubscription, setupUserStatusSubscription]);
 
   useEffect(() => {
     scrollToBottom();
   }, [directMessages, scrollToBottom]);
+
+  // Cleanup on component unmount
+  useEffect(() => {
+    return () => {
+      handleUserLeave();
+    };
+  }, [handleUserLeave]);
 
   if (!currentUser) {
     return (
@@ -521,7 +676,7 @@ const Chat = () => {
             </div>
             <ThemeToggle />
             <Link to="/">
-              <Button variant="outline" size="sm" className="gap-2">
+              <Button variant="outline" size="sm" className="gap-2" onClick={handleUserLeave}>
                 <Home className="w-4 h-4" />
                 Home
               </Button>
