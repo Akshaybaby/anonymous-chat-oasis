@@ -225,13 +225,7 @@ const Chat = () => {
             await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id);
             
             setTimeout(() => {
-              if (findMatch) {
-                setIsSearchingForMatch(true);
-                findMatch();
-                matchingRef.current = setInterval(() => {
-                  findMatch();
-                }, 3000);
-              }
+              startMatching();
             }, 1000);
           }
         }
@@ -292,6 +286,18 @@ const Chat = () => {
       setNewMessage(messageContent);
     }
   }, [newMessage, currentUser, currentDirectChat, isPartnerAI, currentChatPartner, toast]);
+
+  // Start matching process
+  const startMatching = useCallback(() => {
+    if (matchingRef.current || currentDirectChat) return;
+    
+    setIsSearchingForMatch(true);
+    findMatch(); // Try immediately
+    
+    matchingRef.current = setInterval(() => {
+      findMatch();
+    }, 3000);
+  }, [currentDirectChat]);
 
   // Find and match with users (with AI fallback)
   const findMatch = useCallback(async () => {
@@ -403,18 +409,6 @@ const Chat = () => {
     }
   }, [currentUser, currentDirectChat, toast]);
 
-  // Start matching process
-  const startMatching = useCallback(() => {
-    if (matchingRef.current || currentDirectChat) return;
-    
-    setIsSearchingForMatch(true);
-    findMatch(); // Try immediately
-    
-    matchingRef.current = setInterval(() => {
-      findMatch();
-    }, 3000);
-  }, [findMatch, currentDirectChat]);
-
   // Stop matching
   const stopMatching = useCallback(() => {
     setIsSearchingForMatch(false);
@@ -516,13 +510,7 @@ const Chat = () => {
       
       // Immediately start looking for new match
       setTimeout(() => {
-        if (findMatch) {
-          setIsSearchingForMatch(true);
-          findMatch();
-          matchingRef.current = setInterval(() => {
-            findMatch();
-          }, 3000);
-        }
+        startMatching();
       }, 500);
     } catch (error) {
       console.error('Error skipping user:', error);
