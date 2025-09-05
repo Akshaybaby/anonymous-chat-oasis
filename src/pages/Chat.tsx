@@ -9,6 +9,8 @@ import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { MediaUpload } from '@/components/MediaUpload';
 import { MessageRenderer } from '@/components/MessageRenderer';
+import { useSessionHandler } from '@/hooks/useSessionHandler';
+import { AIChatbotManager } from '@/services/aiChatbot';
 
 interface CasualUser {
   id: string;
@@ -44,9 +46,10 @@ const Chat = () => {
   const [currentDirectChat, setCurrentDirectChat] = useState<DirectChat | null>(null);
   const [currentChatPartner, setCurrentChatPartner] = useState<CasualUser | null>(null);
   const [newMessage, setNewMessage] = useState('');
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState('Female');
   const [isJoining, setIsJoining] = useState(false);
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
+  const [isPartnerAI, setIsPartnerAI] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -54,8 +57,19 @@ const Chat = () => {
   const matchingChannelRef = useRef<any>(null);
   const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
   const matchingRef = useRef<NodeJS.Timeout | null>(null);
+  const aiManagerRef = useRef<AIChatbotManager>(new AIChatbotManager());
   
   const { toast } = useToast();
+
+  // Session handler
+  const { handleLogout } = useSessionHandler(currentUser, () => {
+    setCurrentUser(null);
+    setCurrentDirectChat(null);
+    setCurrentChatPartner(null);
+    setDirectMessages([]);
+    setIsSearchingForMatch(false);
+    setIsPartnerAI(false);
+  });
 
   const avatarColors = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
@@ -127,7 +141,7 @@ const Chat = () => {
       });
   }, [currentDirectChat, scrollToBottom]);
 
-  // Setup matching subscription
+  // Setup matching subscription (with partner disconnect detection)
   const setupMatchingSubscription = useCallback(() => {
     if (!currentUser || matchingChannelRef.current) return;
 
@@ -155,10 +169,14 @@ const Chat = () => {
               .single();
               
             if (partner) {
+              // Check if partner is AI
+              const isAI = partner.id.startsWith('ai_');
+              
               setCurrentChatPartner(partner);
               setCurrentDirectChat(newChat);
               setDirectMessages([]);
               setIsSearchingForMatch(false);
+              setIsPartnerAI(isAI);
               
               // Save to localStorage
               localStorage.setItem('current_chat', JSON.stringify(newChat));
@@ -172,10 +190,56 @@ const Chat = () => {
           }
         }
       )
+      // Monitor user status changes to detect disconnects
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'casual_users'
+        },
+        async (payload) => {
+          const updatedUser = payload.new as CasualUser;
+          
+          // If current chat partner went offline and it's not an AI
+          if (currentChatPartner && 
+              updatedUser.id === currentChatPartner.id && 
+              updatedUser.status === 'offline' && 
+              !isPartnerAI) {
+            
+            toast({
+              title: "Partner disconnected",
+              description: `${currentChatPartner.username} has left the chat. Finding you someone new...`,
+            });
+            
+            // Clean up current chat
+            setCurrentChatPartner(null);
+            setCurrentDirectChat(null);
+            setDirectMessages([]);
+            setIsPartnerAI(false);
+            
+            localStorage.removeItem('current_chat');
+            localStorage.removeItem('chat_partner');
+            
+            // Set current user back to available and start matching
+            await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id);
+            
+            setTimeout(() => {
+              if (findMatch) {
+                setIsSearchingForMatch(true);
+                findMatch();
+                matchingRef.current = setInterval(() => {
+                  findMatch();
+                }, 3000);
+              }
+            }, 1000);
+          }
+        }
+      )
       .subscribe();
-  }, [currentUser, toast]);
+  }, [currentUser, currentChatPartner, isPartnerAI, toast]);
 
-  // Send message
+  // Send message (with AI response handling)
   const sendMessage = useCallback(async () => {
     if (!newMessage.trim() || !currentUser || !currentDirectChat) return;
 
@@ -201,23 +265,46 @@ const Chat = () => {
           description: "Failed to send message. Please try again.",
           variant: "destructive"
         });
+        return;
+      }
+
+      // If chatting with AI, generate AI response
+      if (isPartnerAI && currentChatPartner) {
+        const aiBot = aiManagerRef.current.getBot(currentChatPartner.id);
+        if (aiBot) {
+          const response = aiBot.generateResponse(messageContent);
+          
+          setTimeout(async () => {
+            await supabase
+              .from('direct_messages')
+              .insert({
+                chat_id: currentDirectChat.id,
+                sender_id: currentChatPartner.id,
+                sender_username: currentChatPartner.username,
+                content: response.message,
+                message_type: 'text'
+              });
+          }, response.delay);
+        }
       }
     } catch (err) {
       console.error('Error in sendMessage:', err);
       setNewMessage(messageContent);
     }
-  }, [newMessage, currentUser, currentDirectChat, toast]);
+  }, [newMessage, currentUser, currentDirectChat, isPartnerAI, currentChatPartner, toast]);
 
-  // Find and match with users
+  // Find and match with users (with AI fallback)
   const findMatch = useCallback(async () => {
     if (!currentUser || currentDirectChat) return;
 
     try {
+      // First, try to find real users
       const { data: availableUsers } = await supabase
         .from('casual_users')
         .select('*')
         .eq('status', 'available')
         .neq('id', currentUser.id)
+        .not('id', 'like', 'ai_%') // Exclude AI users
         .gte('last_active', new Date(Date.now() - 60000).toISOString()) // Last 1 minute
         .limit(5);
 
@@ -225,10 +312,10 @@ const Chat = () => {
         const targetUser = availableUsers[0];
         
         // Update both users to matched
-        await supabase.rpc('atomic_match_users', {
-          user1_id: currentUser.id,
-          user2_id: targetUser.id
-        });
+        await Promise.all([
+          supabase.from('casual_users').update({ status: 'matched' }).eq('id', currentUser.id),
+          supabase.from('casual_users').update({ status: 'matched' }).eq('id', targetUser.id)
+        ]);
         
         // Create chat
         const { data: chatData, error: chatError } = await supabase
@@ -248,6 +335,7 @@ const Chat = () => {
           setCurrentDirectChat(chatData);
           setDirectMessages([]);
           setIsSearchingForMatch(false);
+          setIsPartnerAI(false);
           
           localStorage.setItem('current_chat', JSON.stringify(chatData));
           localStorage.setItem('chat_partner', JSON.stringify(targetUser));
@@ -256,6 +344,58 @@ const Chat = () => {
             title: "Connected!",
             description: `You're now chatting with ${targetUser.username}`,
           });
+        }
+      } else {
+        // No real users available - create AI chatbot
+        const aiBot = await aiManagerRef.current.createAIBot();
+        if (aiBot) {
+          const aiUserData = aiBot.getUserData();
+          
+          // Update current user to matched
+          await supabase.from('casual_users').update({ status: 'matched' }).eq('id', currentUser.id);
+          
+          // Create chat with AI
+          const { data: chatData, error: chatError } = await supabase
+            .from('direct_chats')
+            .insert({
+              user1_id: currentUser.id,
+              user2_id: aiUserData.id,
+              user1_username: currentUser.username,
+              user2_username: aiUserData.username,
+              last_message_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+          if (!chatError && chatData) {
+            setCurrentChatPartner(aiUserData);
+            setCurrentDirectChat(chatData);
+            setDirectMessages([]);
+            setIsSearchingForMatch(false);
+            setIsPartnerAI(true);
+            
+            localStorage.setItem('current_chat', JSON.stringify(chatData));
+            localStorage.setItem('chat_partner', JSON.stringify(aiUserData));
+            
+            toast({
+              title: "Connected!",
+              description: `You're now chatting with ${aiUserData.username}`,
+            });
+
+            // AI sends first message after a delay
+            setTimeout(async () => {
+              const response = aiBot.generateResponse('');
+              await supabase
+                .from('direct_messages')
+                .insert({
+                  chat_id: chatData.id,
+                  sender_id: aiUserData.id,
+                  sender_username: aiUserData.username,
+                  content: response.message,
+                  message_type: 'text'
+                });
+            }, 2000);
+          }
         }
       }
     } catch (error) {
@@ -342,22 +482,29 @@ const Chat = () => {
     }
   };
 
-  // Skip to next user
+  // Skip to next user (with AI cleanup and auto-rematch)
   const skipToNextUser = async () => {
     if (!currentChatPartner || !currentUser) return;
     
     const partnerName = currentChatPartner.username;
+    const wasPartnerAI = isPartnerAI;
     
     try {
-      // Set both users back to available
-      await Promise.all([
-        supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id),
-        supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id)
-      ]);
+      if (wasPartnerAI) {
+        // Remove AI bot
+        await aiManagerRef.current.removeAIBot(currentChatPartner.id);
+      } else {
+        // Set partner back to available (real user)
+        await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id);
+      }
+      
+      // Set current user back to available
+      await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id);
       
       setCurrentChatPartner(null);
       setCurrentDirectChat(null);
       setDirectMessages([]);
+      setIsPartnerAI(false);
       
       localStorage.removeItem('current_chat');
       localStorage.removeItem('chat_partner');
@@ -367,7 +514,16 @@ const Chat = () => {
         description: `Left chat with ${partnerName}. Looking for someone new...`,
       });
       
-      startMatching();
+      // Immediately start looking for new match
+      setTimeout(() => {
+        if (findMatch) {
+          setIsSearchingForMatch(true);
+          findMatch();
+          matchingRef.current = setInterval(() => {
+            findMatch();
+          }, 3000);
+        }
+      }, 500);
     } catch (error) {
       console.error('Error skipping user:', error);
     }
@@ -425,6 +581,9 @@ const Chat = () => {
         cleanupChannels();
         if (heartbeatRef.current) clearInterval(heartbeatRef.current);
         if (matchingRef.current) clearInterval(matchingRef.current);
+        
+        // Cleanup AI bots when user logs out
+        aiManagerRef.current.removeAllAIBots();
       };
     }
   }, [currentUser, currentDirectChat, setupMatchingSubscription, startHeartbeat, startMatching, cleanupChannels]);
@@ -538,6 +697,7 @@ const Chat = () => {
                 <div>
                   <h2 className="font-semibold text-xl">
                     Chatting with: {currentChatPartner?.username}
+                    {isPartnerAI && <span className="text-xs text-muted-foreground ml-2">(AI)</span>}
                   </h2>
                   <p className="text-sm text-muted-foreground">
                     Anonymous conversation • Real-time chat
