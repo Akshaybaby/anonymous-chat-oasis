@@ -1,527 +1,214 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent } from '@/components/ui/card';
-import { Send, MessageCircle, Home, SkipForward, Upload, Image, File } from 'lucide-react';
-import { ThemeToggle } from '@/components/ui/theme-toggle';
-import { Link } from 'react-router-dom';
-import { useToast } from '@/hooks/use-toast';
-import { MediaUpload } from '@/components/MediaUpload';
-import { MessageRenderer } from '@/components/MessageRenderer';
+"use client";
 
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import { toast } from "@/components/ui/use-toast";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { MediaUpload } from "@/components/ui/media-upload";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+
+// -------------------------
+// Types
+// -------------------------
 interface CasualUser {
   id: string;
   username: string;
   avatar_color: string;
   status: string;
   last_active?: string;
-  is_ai?: boolean;
-}
-
-interface DirectMessage {
-  id: string;
-  content: string;
-  sender_username: string;
-  created_at: string;
-  message_type?: string;
-  media_url?: string;
-  sender_id: string;
-  chat_id?: string;
-  is_ai_message?: boolean;
+  is_bot?: boolean;
+  session_id?: string;
+  session_revoked?: boolean;
 }
 
 interface DirectChat {
   id: string;
-  user1_username: string;
-  user2_username: string;
   user1_id: string;
   user2_id: string;
+  user1_username: string;
+  user2_username: string;
   last_message_at: string;
 }
 
-// AI Chatbot names pool
-const AI_NAMES = [
-  'Rahul', 'Sneha', 'Arjun', 'Mariya', 'Fathima', 'Anna', 'Caroline', 
-  'Safiya', 'Jeni', 'Jennifer', 'Nicole', 'Alex', 'Maya', 'Rohan', 
-  'Priya', 'David', 'Sarah', 'Karthik', 'Ananya', 'Michael'
+interface DirectMessage {
+  id: string;
+  chat_id: string;
+  sender_id: string;
+  sender_username: string;
+  content: string | null;
+  message_type: string;
+  media_url?: string | null;
+  created_at: string;
+}
+
+// -------------------------
+// Helpers
+// -------------------------
+const BOT_NAMES = [
+  "Rahul","Sneha","Arjun","Mariya","Fathima",
+  "Anna","Caroline","Safiya","Jeni","Jennifer","Nicole"
 ];
 
-// AI Response templates for natural conversation
-const AI_RESPONSES = [
-  "Hey! How's your day going?",
-  "That's interesting! Tell me more about that.",
-  "I totally get what you mean!",
-  "Wow, that sounds amazing!",
-  "Haha, that's pretty funny!",
-  "I've been thinking about that lately too.",
-  "That's a great point you made.",
-  "What do you think about this weather?",
-  "I love hearing about people's experiences.",
-  "That reminds me of something similar I heard.",
-  "You seem like a really interesting person!",
-  "I'm curious about your thoughts on that.",
-  "That's so cool! I wish I could experience that.",
-  "You have such a unique perspective!",
-  "I'm really enjoying our conversation!",
+const avatarColors = [
+  "bg-red-500","bg-blue-500","bg-green-500","bg-yellow-500",
+  "bg-purple-500","bg-pink-500","bg-indigo-500","bg-teal-500"
 ];
 
-const TOPIC_RESPONSES = {
-  greeting: [
-    "Hello there! Nice to meet you!",
-    "Hi! Great to connect with you!",
-    "Hey! How are you doing today?",
-    "Hello! What's been the highlight of your day?"
-  ],
-  weather: [
-    "Yeah, the weather has been pretty interesting lately!",
-    "I love talking about weather - it affects everyone differently.",
-    "Weather always makes for good conversation starter!"
-  ],
-  food: [
-    "Oh, I love food discussions! What's your favorite cuisine?",
-    "Food brings people together, doesn't it?",
-    "That sounds delicious! I'm getting hungry just thinking about it."
-  ],
-  work: [
-    "Work can be such a mixed bag sometimes!",
-    "That's really cool! What do you enjoy most about it?",
-    "Work-life balance is so important, isn't it?"
-  ],
-  hobby: [
-    "That's such an interesting hobby!",
-    "I admire people who have creative pursuits.",
-    "Hobbies make life so much more colorful!"
-  ],
-  default: [
-    "That's really interesting!",
-    "Tell me more about that.",
-    "I never thought about it that way.",
-    "You're making me think differently about this."
-  ]
+const randomDelay = (min=700, max=1800) =>
+  Math.floor(min + Math.random()*(max-min));
+
+const botReply = (humanMsg: string) => {
+  const starters = [
+    "Interesting! ","Got it. ","Makes sense. ",
+    "Haha, true. ","I see. ","Tell me more— "
+  ];
+  const followups = [
+    "what do you think?","how did that happen?",
+    "have you tried anything else?","why do you feel that way?",
+    "that's pretty cool.","I'm curious now."
+  ];
+  const echo = humanMsg.slice(0, 140);
+  return `${starters[Math.floor(Math.random()*starters.length)]}${echo ? `"${echo}" — ` : ""}${followups[Math.floor(Math.random()*followups.length)]}`;
 };
 
-const Chat = () => {
+// -------------------------
+// Chat Component
+// -------------------------
+export default function Chat() {
+  const [username, setUsername] = useState("");
   const [currentUser, setCurrentUser] = useState<CasualUser | null>(null);
-  const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
-  const [currentDirectChat, setCurrentDirectChat] = useState<DirectChat | null>(null);
   const [currentChatPartner, setCurrentChatPartner] = useState<CasualUser | null>(null);
-  const [newMessage, setNewMessage] = useState('');
-  const [username, setUsername] = useState('');
+  const [currentDirectChat, setCurrentDirectChat] = useState<DirectChat | null>(null);
+  const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
+  const [messageInput, setMessageInput] = useState("");
   const [isJoining, setIsJoining] = useState(false);
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+
   const messageChannelRef = useRef<any>(null);
-  const matchingChannelRef = useRef<any>(null);
-  const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
-  const matchingRef = useRef<NodeJS.Timeout | null>(null);
-  const aiResponseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  const { toast } = useToast();
+  const partnerPresenceChannelRef = useRef<any>(null);
+  const botTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const avatarColors = [
-    '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
-    '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
-  ];
+  // -------------------------
+  // Ensure bots exist
+  // -------------------------
+  const ensureBotsExist = useCallback(async () => {
+    const { data: existing } = await supabase
+      .from("casual_users")
+      .select("username")
+      .in("username", BOT_NAMES);
 
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
+    const existingSet = new Set((existing || []).map(r => r.username));
+    const toCreate = BOT_NAMES.filter(n => !existingSet.has(n));
+
+    if (toCreate.length) {
+      const rows = toCreate.map(n => ({
+        username: n,
+        avatar_color: avatarColors[Math.floor(Math.random()*avatarColors.length)],
+        status: "available",
+        is_bot: true,
+        last_active: new Date().toISOString()
+      }));
+      await supabase.from("casual_users").insert(rows);
+    }
   }, []);
 
-  // Create AI Chatbot
-  const createAIBot = useCallback(async () => {
-    const availableName = AI_NAMES[Math.floor(Math.random() * AI_NAMES.length)];
-    const avatarColor = avatarColors[Math.floor(Math.random() * avatarColors.length)];
-    
+  // -------------------------
+  // Create user
+  // -------------------------
+  const createUser = async () => {
+    if (!username.trim()) {
+      toast({
+        title: "Username required",
+        description: "Please enter a username to start chatting",
+        variant: "destructive"
+      });
+      return;
+    }
+    setIsJoining(true);
+    const avatarColor = avatarColors[Math.floor(Math.random()*avatarColors.length)];
+    const sessionId = crypto.randomUUID();
+
     try {
       const { data, error } = await supabase
-        .from('casual_users')
+        .from("casual_users")
         .insert({
-          username: availableName,
+          username: username.trim(),
           avatar_color: avatarColor,
-          status: 'available',
+          status: "available",
           last_active: new Date().toISOString(),
-          is_ai: true
+          is_bot: false,
+          session_id: sessionId,
+          session_revoked: false
         })
         .select()
         .single();
 
       if (error) throw error;
-      return data;
-    } catch (error) {
-      console.error('Error creating AI bot:', error);
-      return null;
-    }
-  }, [avatarColors]);
 
-  // Generate AI response based on context
-  const generateAIResponse = useCallback((userMessage: string) => {
-    const message = userMessage.toLowerCase();
-    
-    // Check for greetings
-    if (message.includes('hi') || message.includes('hello') || message.includes('hey')) {
-      return TOPIC_RESPONSES.greeting[Math.floor(Math.random() * TOPIC_RESPONSES.greeting.length)];
-    }
-    
-    // Check for weather
-    if (message.includes('weather') || message.includes('rain') || message.includes('sunny')) {
-      return TOPIC_RESPONSES.weather[Math.floor(Math.random() * TOPIC_RESPONSES.weather.length)];
-    }
-    
-    // Check for food
-    if (message.includes('food') || message.includes('eat') || message.includes('hungry')) {
-      return TOPIC_RESPONSES.food[Math.floor(Math.random() * TOPIC_RESPONSES.food.length)];
-    }
-    
-    // Check for work
-    if (message.includes('work') || message.includes('job') || message.includes('office')) {
-      return TOPIC_RESPONSES.work[Math.floor(Math.random() * TOPIC_RESPONSES.work.length)];
-    }
-    
-    // Check for hobbies
-    if (message.includes('hobby') || message.includes('play') || message.includes('like to')) {
-      return TOPIC_RESPONSES.hobby[Math.floor(Math.random() * TOPIC_RESPONSES.hobby.length)];
-    }
-    
-    // Default responses
-    return AI_RESPONSES[Math.floor(Math.random() * AI_RESPONSES.length)];
-  }, []);
+      setCurrentUser(data);
+      localStorage.setItem("casual_user", JSON.stringify(data));
 
-  // Send AI response
-  const sendAIResponse = useCallback(async (userMessage: string) => {
-    if (!currentDirectChat || !currentChatPartner?.is_ai) return;
+      await ensureBotsExist();
 
-    const aiResponse = generateAIResponse(userMessage);
-    
-    // Random delay between 2-5 seconds to simulate typing
-    const delay = Math.random() * 3000 + 2000;
-    
-    aiResponseTimeoutRef.current = setTimeout(async () => {
-      try {
-        await supabase
-          .from('direct_messages')
-          .insert({
-            chat_id: currentDirectChat.id,
-            sender_id: currentChatPartner.id,
-            sender_username: currentChatPartner.username,
-            content: aiResponse,
-            message_type: 'text',
-            is_ai_message: true
-          });
-      } catch (error) {
-        console.error('Error sending AI response:', error);
-      }
-    }, delay);
-  }, [currentDirectChat, currentChatPartner, generateAIResponse]);
-
-  // Handle media upload
-  const handleMediaUpload = useCallback(async (file: File) => {
-    if (!currentUser || !currentDirectChat || !file) return;
-
-    setIsUploading(true);
-    
-    try {
-      // Generate unique filename
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random()}.${fileExt}`;
-      const filePath = `chat-media/${fileName}`;
-
-      // Upload file to Supabase storage
-      const { error: uploadError } = await supabase.storage
-        .from('media')
-        .upload(filePath, file);
-
-      if (uploadError) throw uploadError;
-
-      // Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('media')
-        .getPublicUrl(filePath);
-
-      // Determine message type
-      const messageType = file.type.startsWith('image/') ? 'image' : 
-                         file.type.startsWith('video/') ? 'video' : 'file';
-
-      // Send message with media
-      const { error } = await supabase
-        .from('direct_messages')
-        .insert({
-          chat_id: currentDirectChat.id,
-          sender_id: currentUser.id,
-          sender_username: currentUser.username,
-          content: file.name,
-          message_type: messageType,
-          media_url: publicUrl
-        });
-
-      if (error) throw error;
-
-      toast({
-        title: "Media sent!",
-        description: "Your file has been shared successfully.",
-      });
-
-    } catch (error) {
-      console.error('Error uploading media:', error);
-      toast({
-        title: "Upload failed",
-        description: "Failed to upload media. Please try again.",
-        variant: "destructive"
-      });
+      const revoke = async () => {
+        if (data?.id) {
+          await supabase.rpc("leave_chat", { p_user_id: data.id }).catch(()=>{});
+          await supabase.from("casual_users")
+            .update({ status: "available", session_revoked: true })
+            .eq("id", data.id);
+        }
+      };
+      window.addEventListener("beforeunload", revoke);
+    } catch (e) {
+      console.error("Error creating user:", e);
+      toast({ title: "Error", description: "Failed to create user", variant: "destructive" });
     } finally {
-      setIsUploading(false);
+      setIsJoining(false);
     }
-  }, [currentUser, currentDirectChat, toast]);
+  };
 
-  // Monitor partner disconnection
-  const monitorPartnerConnection = useCallback(() => {
-    if (!currentChatPartner || currentChatPartner.is_ai) return;
-
-    const checkPartnerStatus = setInterval(async () => {
-      try {
-        const { data: partner } = await supabase
-          .from('casual_users')
-          .select('last_active, status')
-          .eq('id', currentChatPartner.id)
-          .single();
-
-        if (partner) {
-          const lastActive = new Date(partner.last_active || 0);
-          const now = new Date();
-          const timeDiff = now.getTime() - lastActive.getTime();
-
-          // If partner hasn't been active for more than 2 minutes, consider disconnected
-          if (timeDiff > 120000 || partner.status === 'available') {
-            clearInterval(checkPartnerStatus);
-            
-            toast({
-              title: "Partner disconnected",
-              description: "Your chat partner has left. Finding a new match...",
-            });
-
-            // Reset current chat
-            setCurrentChatPartner(null);
-            setCurrentDirectChat(null);
-            setDirectMessages([]);
-            
-            localStorage.removeItem('current_chat');
-            localStorage.removeItem('chat_partner');
-            
-            // Start matching again
-            startMatching();
-          }
-        }
-      } catch (error) {
-        console.error('Error checking partner status:', error);
-      }
-    }, 10000); // Check every 10 seconds
-
-    return () => clearInterval(checkPartnerStatus);
-  }, [currentChatPartner]);
-
-  // Load messages for current chat
-  const loadMessages = useCallback(async () => {
-    if (!currentDirectChat) return;
-    
-    try {
-      const { data, error } = await supabase
-        .from('direct_messages')
-        .select('*')
-        .eq('chat_id', currentDirectChat.id)
-        .order('created_at', { ascending: true });
-        
-      if (error) {
-        console.error('Error loading messages:', error);
-        return;
-      }
-      
-      setDirectMessages(data || []);
-      scrollToBottom();
-    } catch (err) {
-      console.error('Error in loadMessages:', err);
-    }
-  }, [currentDirectChat, scrollToBottom]);
-
-  // Setup real-time message subscription
-  const setupMessageSubscription = useCallback(() => {
-    if (!currentDirectChat || messageChannelRef.current) return;
-
-    console.log('Setting up message subscription for chat:', currentDirectChat.id);
-    
-    messageChannelRef.current = supabase
-      .channel(`messages-${currentDirectChat.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'direct_messages',
-          filter: `chat_id=eq.${currentDirectChat.id}`
-        },
-        (payload) => {
-          console.log('New message received:', payload.new);
-          const newMessage = payload.new as DirectMessage;
-          
-          setDirectMessages(prev => {
-            // Avoid duplicates
-            if (prev.some(msg => msg.id === newMessage.id)) {
-              return prev;
-            }
-            return [...prev, newMessage];
-          });
-          
-          scrollToBottom();
-        }
-      )
-      .subscribe((status) => {
-        console.log('Message subscription status:', status);
-      });
-  }, [currentDirectChat, scrollToBottom]);
-
-  // Setup matching subscription
-  const setupMatchingSubscription = useCallback(() => {
-    if (!currentUser || matchingChannelRef.current) return;
-
-    matchingChannelRef.current = supabase
-      .channel('matching')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'direct_chats'
-        },
-        async (payload) => {
-          const newChat = payload.new as DirectChat;
-          
-          if (newChat.user1_id === currentUser.id || newChat.user2_id === currentUser.id) {
-            const partnerId = newChat.user1_id === currentUser.id ? newChat.user2_id : newChat.user1_id;
-            const partnerUsername = newChat.user1_id === currentUser.id ? newChat.user2_username : newChat.user1_username;
-            
-            // Get partner details
-            const { data: partner } = await supabase
-              .from('casual_users')
-              .select('*')
-              .eq('id', partnerId)
-              .single();
-              
-            if (partner) {
-              setCurrentChatPartner(partner);
-              setCurrentDirectChat(newChat);
-              setDirectMessages([]);
-              setIsSearchingForMatch(false);
-              
-              // Save to localStorage
-              localStorage.setItem('current_chat', JSON.stringify(newChat));
-              localStorage.setItem('chat_partner', JSON.stringify(partner));
-              
-              toast({
-                title: "Connected!",
-                description: `You're now chatting with ${partnerUsername}${partner.is_ai ? ' (AI Assistant)' : ''}`,
-              });
-
-              // Start monitoring if it's a real user
-              if (!partner.is_ai) {
-                monitorPartnerConnection();
-              }
-            }
-          }
-        }
-      )
-      .subscribe();
-  }, [currentUser, toast, monitorPartnerConnection]);
-
-  // Send message
-  const sendMessage = useCallback(async () => {
-    if (!newMessage.trim() || !currentUser || !currentDirectChat) return;
-
-    const messageContent = newMessage.trim();
-    setNewMessage('');
-
-    try {
-      const { error } = await supabase
-        .from('direct_messages')
-        .insert({
-          chat_id: currentDirectChat.id,
-          sender_id: currentUser.id,
-          sender_username: currentUser.username,
-          content: messageContent,
-          message_type: 'text'
-        });
-
-      if (error) {
-        console.error('Error sending message:', error);
-        setNewMessage(messageContent); // Restore message on error
-        toast({
-          title: "Error",
-          description: "Failed to send message. Please try again.",
-          variant: "destructive"
-        });
-      } else {
-        // Trigger AI response if chatting with AI
-        if (currentChatPartner?.is_ai) {
-          sendAIResponse(messageContent);
-        }
-      }
-    } catch (err) {
-      console.error('Error in sendMessage:', err);
-      setNewMessage(messageContent);
-    }
-  }, [newMessage, currentUser, currentDirectChat, currentChatPartner, toast, sendAIResponse]);
-
-  // Find and match with users (prioritize real users)
+  // -------------------------
+  // Matchmaking
+  // -------------------------
   const findMatch = useCallback(async () => {
     if (!currentUser || currentDirectChat) return;
 
     try {
-      // First, try to find real users
-      const { data: realUsers } = await supabase
-        .from('casual_users')
-        .select('*')
-        .eq('status', 'available')
-        .eq('is_ai', false)
-        .neq('id', currentUser.id)
-        .gte('last_active', new Date(Date.now() - 60000).toISOString()) // Last 1 minute
+      const { data: humans } = await supabase
+        .from("casual_users")
+        .select("*")
+        .eq("status","available")
+        .eq("is_bot", false)
+        .neq("id", currentUser.id)
+        .gte("last_active", new Date(Date.now() - 60000).toISOString())
+        .order("last_active",{ ascending:false })
         .limit(5);
 
-      let targetUser = null;
-
-      if (realUsers && realUsers.length > 0) {
-        // Match with real user
-        targetUser = realUsers[0];
+      let targetUser: CasualUser | null = null;
+      if (humans && humans.length) {
+        targetUser = humans[0];
       } else {
-        // No real users available, check for existing AI bots
-        const { data: aiBots } = await supabase
-          .from('casual_users')
-          .select('*')
-          .eq('status', 'available')
-          .eq('is_ai', true)
+        const { data: bots } = await supabase
+          .from("casual_users")
+          .select("*")
+          .eq("status","available")
+          .eq("is_bot", true)
+          .order("last_active",{ ascending:false })
           .limit(1);
-
-        if (aiBots && aiBots.length > 0) {
-          targetUser = aiBots[0];
-        } else {
-          // Create new AI bot
-          targetUser = await createAIBot();
+        if (bots && bots.length) {
+          targetUser = bots[0];
         }
       }
 
       if (targetUser) {
-        // Update both users to matched
-        await supabase.rpc('atomic_match_users', {
+        await supabase.rpc("atomic_match_users", {
           user1_id: currentUser.id,
           user2_id: targetUser.id
         });
-        
-        // Create chat
+
         const { data: chatData, error: chatError } = await supabase
-          .from('direct_chats')
+          .from("direct_chats")
           .insert({
             user1_id: currentUser.id,
             user2_id: targetUser.id,
@@ -537,480 +224,277 @@ const Chat = () => {
           setCurrentDirectChat(chatData);
           setDirectMessages([]);
           setIsSearchingForMatch(false);
-          
-          localStorage.setItem('current_chat', JSON.stringify(chatData));
-          localStorage.setItem('chat_partner', JSON.stringify(targetUser));
-          
-          toast({
-            title: "Connected!",
-            description: `You're now chatting with ${targetUser.username}${targetUser.is_ai ? ' (AI Assistant)' : ''}`,
-          });
 
-          // Start monitoring if it's a real user
-          if (!targetUser.is_ai) {
-            monitorPartnerConnection();
-          }
+          localStorage.setItem("current_chat", JSON.stringify(chatData));
+          localStorage.setItem("chat_partner", JSON.stringify(targetUser));
+
+          toast({ title: "Connected!", description: `You're now chatting with ${targetUser.username}` });
         }
       }
     } catch (error) {
-      console.error('Error finding match:', error);
+      console.error("Error finding match:", error);
     }
-  }, [currentUser, currentDirectChat, toast, createAIBot, monitorPartnerConnection]);
-
-  // Start matching process
-  const startMatching = useCallback(() => {
-    if (matchingRef.current || currentDirectChat) return;
-    
-    setIsSearchingForMatch(true);
-    findMatch(); // Try immediately
-    
-    matchingRef.current = setInterval(() => {
-      findMatch();
-    }, 3000);
-  }, [findMatch, currentDirectChat]);
-
-  // Stop matching
-  const stopMatching = useCallback(() => {
-    setIsSearchingForMatch(false);
-    if (matchingRef.current) {
-      clearInterval(matchingRef.current);
-      matchingRef.current = null;
-    }
-  }, []);
-
-  // Heartbeat to maintain presence
-  const startHeartbeat = useCallback(() => {
-    if (!currentUser || heartbeatRef.current) return;
-    
-    heartbeatRef.current = setInterval(async () => {
-      await supabase
-        .from('casual_users')
-        .update({ 
-          last_active: new Date().toISOString(),
-          status: currentDirectChat ? 'matched' : 'available'
-        })
-        .eq('id', currentUser.id);
-    }, 15000);
   }, [currentUser, currentDirectChat]);
 
-  // Create user
-  const createUser = async () => {
-    if (!username.trim()) {
-      toast({
-        title: "Username required",
-        description: "Please enter a username to start chatting",
-        variant: "destructive"
-      });
-      return;
-    }
+  const startMatching = useCallback(() => {
+    setIsSearchingForMatch(true);
+    findMatch();
+    const interval = setInterval(findMatch, 5000);
+    return () => clearInterval(interval);
+  }, [findMatch]);
 
-    setIsJoining(true);
-    const avatarColor = avatarColors[Math.floor(Math.random() * avatarColors.length)];
-    
-    try {
-      const { data, error } = await supabase
-        .from('casual_users')
-        .insert({
-          username: username.trim(),
-          avatar_color: avatarColor,
-          status: 'available',
-          last_active: new Date().toISOString(),
-          is_ai: false
-        })
-        .select()
-        .single();
+  // -------------------------
+  // Partner presence
+  // -------------------------
+  const watchPartnerPresence = useCallback(() => {
+    if (!currentChatPartner) return;
+    if (partnerPresenceChannelRef.current) return;
 
-      if (error) throw error;
+    partnerPresenceChannelRef.current = supabase
+      .channel(`presence-${currentChatPartner.id}`)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "casual_users",
+        filter: `id=eq.${currentChatPartner.id}`
+      }, (payload) => {
+        const row = payload.new as CasualUser;
+        if (row.status !== "matched" || row.session_revoked) {
+          setCurrentChatPartner(null);
+          setCurrentDirectChat(null);
+          setDirectMessages([]);
+          localStorage.removeItem("current_chat");
+          localStorage.removeItem("chat_partner");
+          toast({ title: "Partner left", description: "Finding a new match..." });
+          startMatching();
+          if (partnerPresenceChannelRef.current) {
+            supabase.removeChannel(partnerPresenceChannelRef.current);
+            partnerPresenceChannelRef.current = null;
+          }
+        }
+      })
+      .subscribe();
+  }, [currentChatPartner, startMatching]);
 
-      setCurrentUser(data);
-      localStorage.setItem('casual_user', JSON.stringify(data));
-      
-    } catch (error) {
-      console.error('Error creating user:', error);
-      toast({
-        title: "Error",
-        description: "Failed to create user. Please try again.",
-        variant: "destructive"
-      });
-    } finally {
-      setIsJoining(false);
-    }
-  };
+  // -------------------------
+  // Load messages
+  // -------------------------
+  const loadMessages = useCallback(async () => {
+    if (!currentDirectChat) return;
+    const { data, error } = await supabase
+      .from("direct_messages")
+      .select("*")
+      .eq("chat_id", currentDirectChat.id)
+      .order("created_at", { ascending:true });
+    if (!error && data) setDirectMessages(data);
+  }, [currentDirectChat]);
 
-  // Skip to next user
-  const skipToNextUser = async () => {
-    if (!currentChatPartner || !currentUser) return;
-    
-    const partnerName = currentChatPartner.username;
-    
-    try {
-      // Set both users back to available (or remove AI bot)
-      if (currentChatPartner.is_ai) {
-        // Delete AI bot
-        await supabase.from('casual_users').delete().eq('id', currentChatPartner.id);
-      } else {
-        await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id);
-      }
-      
-      await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id);
-      
-      setCurrentChatPartner(null);
-      setCurrentDirectChat(null);
-      setDirectMessages([]);
-      
-      localStorage.removeItem('current_chat');
-      localStorage.removeItem('chat_partner');
-      
-      // Clear AI response timeout
-      if (aiResponseTimeoutRef.current) {
-        clearTimeout(aiResponseTimeoutRef.current);
-      }
-      
-      toast({
-        title: "Finding new person",
-        description: `Left chat with ${partnerName}. Looking for someone new...`,
-      });
-      
-      startMatching();
-    } catch (error) {
-      console.error('Error skipping user:', error);
-    }
-  };
+  // -------------------------
+  // Subscription
+  // -------------------------
+  const setupMessageSubscription = useCallback(() => {
+    if (!currentDirectChat) return;
+    if (messageChannelRef.current) return;
 
-  // Cleanup channels
-  const cleanupChannels = useCallback(() => {
-    if (messageChannelRef.current) {
-      supabase.removeChannel(messageChannelRef.current);
-      messageChannelRef.current = null;
-    }
-    if (matchingChannelRef.current) {
-      supabase.removeChannel(matchingChannelRef.current);
-      matchingChannelRef.current = null;
-    }
-    if (aiResponseTimeoutRef.current) {
-      clearTimeout(aiResponseTimeoutRef.current);
-    }
-  }, []);
+    messageChannelRef.current = supabase
+      .channel(`chat-${currentDirectChat.id}`)
+      .on("postgres_changes", {
+        event: "INSERT",
+        schema: "public",
+        table: "direct_messages",
+        filter: `chat_id=eq.${currentDirectChat.id}`
+      }, (payload) => {
+        const newMessage = payload.new as DirectMessage;
+        setDirectMessages(prev => [...prev, newMessage]);
 
-  // Handle file selection
-  const handleFileSelect = () => {
-    fileInputRef.current?.click();
-  };
+        // If chatting with a bot, auto-reply
+        if (currentChatPartner?.is_bot && newMessage.sender_id === currentUser?.id) {
+          if (botTimerRef.current) clearTimeout(botTimerRef.current);
+          botTimerRef.current = setTimeout(async () => {
+            await supabase.from("direct_messages").insert({
+              chat_id: currentDirectChat.id,
+              sender_id: currentChatPartner.id,
+              sender_username: currentChatPartner.username,
+              content: botReply(newMessage.content || ""),
+              message_type: "text"
+            });
+            await supabase.from("casual_users").update({
+              last_active: new Date().toISOString(),
+              status: "matched"
+            }).eq("id", currentChatPartner.id);
+          }, randomDelay());
+        }
+      })
+      .subscribe();
+  }, [currentDirectChat, currentChatPartner, currentUser]);
 
-  // Handle file change
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      handleMediaUpload(file);
-    }
-  };
-
-  // Main effects
+  // -------------------------
+  // Effects
+  // -------------------------
   useEffect(() => {
-    // Restore session
-    const savedUser = localStorage.getItem('casual_user');
-    const savedChat = localStorage.getItem('current_chat');
-    const savedPartner = localStorage.getItem('chat_partner');
-    
-    if (savedUser) {
-      const user = JSON.parse(savedUser);
-      setCurrentUser(user);
-      
-      if (savedChat && savedPartner) {
-        setCurrentDirectChat(JSON.parse(savedChat));
-        setCurrentChatPartner(JSON.parse(savedPartner));
-      }
-    }
+    const saved = localStorage.getItem("casual_user");
+    if (!saved) return;
+    const user = JSON.parse(saved) as CasualUser;
+    supabase.from("casual_users").select("id, session_revoked")
+      .eq("id", user.id).single()
+      .then(({ data }) => {
+        if (!data || data.session_revoked) {
+          localStorage.removeItem("casual_user");
+          localStorage.removeItem("current_chat");
+          localStorage.removeItem("chat_partner");
+          setCurrentUser(null);
+        } else {
+          setCurrentUser(user);
+        }
+      });
   }, []);
-
-  useEffect(() => {
-    if (currentUser) {
-      // Set user online
-      supabase
-        .from('casual_users')
-        .update({ 
-          status: currentDirectChat ? 'matched' : 'available',
-          last_active: new Date().toISOString()
-        })
-        .eq('id', currentUser.id);
-        
-      setupMatchingSubscription();
-      startHeartbeat();
-      
-      if (!currentDirectChat) {
-        startMatching();
-      }
-      
-      return () => {
-        cleanupChannels();
-        if (heartbeatRef.current) clearInterval(heartbeatRef.current);
-        if (matchingRef.current) clearInterval(matchingRef.current);
-      };
-    }
-  }, [currentUser, currentDirectChat, setupMatchingSubscription, startHeartbeat, startMatching, cleanupChannels]);
 
   useEffect(() => {
     if (currentDirectChat) {
       loadMessages();
       setupMessageSubscription();
-      
+      watchPartnerPresence();
       return () => {
         if (messageChannelRef.current) {
           supabase.removeChannel(messageChannelRef.current);
           messageChannelRef.current = null;
         }
+        if (partnerPresenceChannelRef.current) {
+          supabase.removeChannel(partnerPresenceChannelRef.current);
+          partnerPresenceChannelRef.current = null;
+        }
+        if (botTimerRef.current) {
+          clearTimeout(botTimerRef.current);
+          botTimerRef.current = null;
+        }
       };
     }
-  }, [currentDirectChat, loadMessages, setupMessageSubscription]);
+  }, [currentDirectChat, loadMessages, setupMessageSubscription, watchPartnerPresence]);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [directMessages, scrollToBottom]);
+  // -------------------------
+  // Send message
+  // -------------------------
+  const sendMessage = async () => {
+    if (!messageInput.trim() || !currentUser || !currentDirectChat) return;
+    await supabase.from("direct_messages").insert({
+      chat_id: currentDirectChat.id,
+      sender_id: currentUser.id,
+      sender_username: currentUser.username,
+      content: messageInput,
+      message_type: "text"
+    });
+    setMessageInput("");
+  };
 
-  // Start partner monitoring when chat partner changes
-  useEffect(() => {
-    if (currentChatPartner && !currentChatPartner.is_ai) {
-      const cleanup = monitorPartnerConnection();
-      return cleanup;
+  // -------------------------
+  // Skip to next user
+  // -------------------------
+  const skipToNextUser = async () => {
+    if (!currentChatPartner || !currentUser) return;
+    const partnerName = currentChatPartner.username;
+    await Promise.all([
+      supabase.from("casual_users").update({ status:"available" }).eq("id", currentChatPartner.id),
+      supabase.from("casual_users").update({ status:"available" }).eq("id", currentUser.id)
+    ]);
+    if (partnerPresenceChannelRef.current) {
+      supabase.removeChannel(partnerPresenceChannelRef.current);
+      partnerPresenceChannelRef.current = null;
     }
-  }, [currentChatPartner, monitorPartnerConnection]);
+    if (botTimerRef.current) {
+      clearTimeout(botTimerRef.current);
+      botTimerRef.current = null;
+    }
+    setCurrentChatPartner(null);
+    setCurrentDirectChat(null);
+    setDirectMessages([]);
+    localStorage.removeItem("current_chat");
+    localStorage.removeItem("chat_partner");
+    toast({ title: "Finding new person", description: `Left chat with ${partnerName}. Looking for someone new...` });
+    startMatching();
+  };
 
-  if (!currentUser) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center p-4">
-        <Card className="p-8 max-w-md mx-auto">
-          <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold tracking-tight mb-4">
-              <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
-                Talk with
-              </span>
-              <span className="bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent ml-2">
-                Stranger
-              </span>
-            </h1>
-            <div className="flex items-center justify-center gap-4 mb-4">
-              <Link to="/">
-                <Button variant="outline" size="sm" className="gap-2">
-                  <Home className="w-4 h-4" />
-                  Home
-                </Button>
-              </Link>
-              <ThemeToggle />
-            </div>
-            <p className="text-muted-foreground">
-              Connect instantly with someone random for anonymous chat!
-            </p>
-          </div>
-          
-          <div className="space-y-4">
-            <Input
-              placeholder="Enter your username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && createUser()}
-              className="text-center"
-              maxLength={20}
-            />
-            <Button 
-              onClick={createUser} 
-              disabled={isJoining || !username.trim()}
-              className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
-              size="lg"
-            >
-              {isJoining ? 'Joining...' : 'Start Chatting'}
-            </Button>
-          </div>
-        </Card>
-      </div>
-    );
-  }
-
+  // -------------------------
+  // Render
+  // -------------------------
   return (
-    <div className="min-h-screen bg-background">
-      <div className="border-b bg-card sticky top-0 z-40">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold">
-            <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
-              Talk with
-            </span>
-            <span className="bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 bg-clip-text text-transparent ml-2">
-              Stranger
-            </span>
-          </h1>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div 
-                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold"
-                style={{ backgroundColor: currentUser.avatar_color }}
-              >
-                {currentUser.username.charAt(0).toUpperCase()}
-              </div>
-              <span className="font-medium">{currentUser.username}</span>
-            </div>
-            <ThemeToggle />
-            <Link to="/">
-              <Button variant="outline" size="sm" className="gap-2">
-                <Home className="w-4 h-4" />
-                Home
-              </Button>
-            </Link>
-          </div>
+    <div className="flex flex-col h-screen w-full">
+      {!currentUser ? (
+        <div className="flex flex-col items-center justify-center h-full">
+          <Input
+            placeholder="Enter a username..."
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+          <Button onClick={createUser} disabled={isJoining} className="mt-2">
+            {isJoining ? "Joining..." : "Join Chat"}
+          </Button>
         </div>
-      </div>
-
-      <div className="max-w-4xl mx-auto p-4">
-        {currentDirectChat ? (
-          <Card className="h-[600px] flex flex-col">
-            <div className="p-4 border-b">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-semibold text-xl">
-                    Chatting with: {currentChatPartner?.username}
-                    {currentChatPartner?.is_ai && <span className="text-sm text-blue-500 ml-2">(AI Assistant)</span>}
-                  </h2>
-                  <p className="text-sm text-muted-foreground">
-                    Anonymous conversation • Real-time chat • Media sharing enabled
-                  </p>
-                </div>
-                <Button 
-                  onClick={skipToNextUser}
-                  variant="outline"
-                  size="sm"
-                  className="gap-2"
-                >
-                  <SkipForward className="w-4 h-4" />
-                  Next
-                </Button>
+      ) : (
+        <div className="flex flex-col h-full">
+          {currentChatPartner ? (
+            <>
+              <div className="flex items-center p-2 border-b">
+                <Avatar className="mr-2">
+                  <AvatarFallback className={currentChatPartner.avatar_color}>
+                    {currentChatPartner.username[0].toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <span>{currentChatPartner.username}</span>
+                <Button onClick={skipToNextUser} className="ml-auto">Skip</Button>
               </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {directMessages.length === 0 && (
-                <div className="text-center py-8">
-                  <MessageCircle className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground">
-                    Start the conversation! Say hello to {currentChatPartner?.username}
-                    {currentChatPartner?.is_ai && " - they're here to chat with you!"}
-                  </p>
-                </div>
-              )}
-              
-              {directMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.sender_id === currentUser.id ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[80%] px-4 py-2 rounded-lg ${
-                      message.sender_id === currentUser.id
-                        ? 'bg-primary text-primary-foreground'
-                        : message.is_ai_message 
-                        ? 'bg-blue-50 border border-blue-200 dark:bg-blue-950 dark:border-blue-800'
-                        : 'bg-muted'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-medium">
-                        {message.sender_username}
-                        {message.is_ai_message && <span className="text-blue-500 ml-1">🤖</span>}
-                      </span>
-                      <span className="text-xs opacity-70">
-                        {new Date(message.created_at).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </span>
+              <div className="flex-1 overflow-y-auto p-2">
+                {directMessages.map(m => (
+                  <div key={m.id} className={`mb-2 ${m.sender_id === currentUser.id ? "text-right" : "text-left"}`}>
+                    <div className="inline-block px-3 py-2 rounded-lg bg-gray-200">
+                      {m.message_type === "text" && <span>{m.content}</span>}
+                      {m.message_type === "image" && <img src={m.media_url!} className="max-w-xs rounded" />}
+                      {m.message_type === "video" && (
+                        <video controls className="max-w-xs rounded">
+                          <source src={m.media_url!} type="video/mp4" />
+                        </video>
+                      )}
+                      {m.message_type === "file" && (
+                        <a href={m.media_url!} target="_blank" rel="noreferrer" className="underline">
+                          Download file
+                        </a>
+                      )}
                     </div>
-                    <MessageRenderer 
-                      content={message.content}
-                      messageType={message.message_type}
-                      mediaUrl={message.media_url}
-                    />
                   </div>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
-
-            <div className="p-4 border-t">
-              <div className="flex gap-2">
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  accept="image/*,video/*,.pdf,.doc,.docx,.txt"
-                  className="hidden"
-                />
-                <Button
-                  onClick={handleFileSelect}
-                  variant="outline"
-                  size="icon"
-                  disabled={isUploading}
-                  title="Upload media or file"
-                >
-                  {isUploading ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary"></div>
-                  ) : (
-                    <Upload className="w-4 h-4" />
-                  )}
-                </Button>
-                <Input
-                  ref={inputRef}
-                  placeholder="Type your message..."
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      sendMessage();
-                    }
-                  }}
-                  className="flex-1"
-                  maxLength={1000}
-                  disabled={isUploading}
-                />
-                <Button 
-                  onClick={sendMessage} 
-                  size="icon"
-                  disabled={!newMessage.trim() || isUploading}
-                >
-                  <Send className="w-4 h-4" />
-                </Button>
+                ))}
               </div>
-              <p className="text-xs text-muted-foreground mt-2 text-center">
-                Press Enter to send • Upload images, videos, or files • Be respectful and have fun!
-              </p>
-            </div>
-          </Card>
-        ) : (
-          <Card className="h-[600px] flex items-center justify-center">
-            <div className="text-center">
+              <div className="flex items-center p-2 border-t">
+                <MediaUpload onMediaUploaded={async (url, type) => {
+                  if (!currentUser || !currentDirectChat) return;
+                  await supabase.from("direct_messages").insert({
+                    chat_id: currentDirectChat.id,
+                    sender_id: currentUser.id,
+                    sender_username: currentUser.username,
+                    content: type === "image" ? "[image]" : type === "video" ? "[video]" : "[file]",
+                    message_type: type,
+                    media_url: url
+                  });
+                }} />
+                <Input
+                  placeholder="Type a message..."
+                  value={messageInput}
+                  onChange={(e) => setMessageInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                  className="flex-1 ml-2"
+                />
+                <Button onClick={sendMessage} className="ml-2">Send</Button>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full">
               {isSearchingForMatch ? (
-                <>
-                  <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-primary mx-auto mb-6"></div>
-                  <h3 className="text-xl font-semibold mb-3">Finding Someone...</h3>
-                  <p className="text-muted-foreground mb-2">
-                    Looking for real people first, then AI assistants if needed
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    We prioritize connecting you with real humans!
-                  </p>
-                </>
+                <p>Searching for a match...</p>
               ) : (
-                <>
-                  <MessageCircle className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-                  <h3 className="text-lg font-semibold mb-2">Ready to Chat</h3>
-                  <p className="text-muted-foreground">
-                    Waiting to connect you with someone online...
-                  </p>
-                </>
+                <Button onClick={startMatching}>Start Chatting</Button>
               )}
             </div>
-          </Card>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
-};
-
-export default Chat;
+}
