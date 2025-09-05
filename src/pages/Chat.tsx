@@ -9,6 +9,8 @@ import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { MediaUpload } from '@/components/MediaUpload';
 import { MessageRenderer } from '@/components/MessageRenderer';
+import { useSessionHandler } from '@/hooks/useSessionHandler';
+import { AIChatbotManager } from '@/services/aiChatbot';
 
 interface CasualUser {
   id: string;
@@ -47,6 +49,7 @@ const Chat = () => {
   const [username, setUsername] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
+  const [isConnectedToBot, setIsConnectedToBot] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -54,8 +57,18 @@ const Chat = () => {
   const matchingChannelRef = useRef<any>(null);
   const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
   const matchingRef = useRef<NodeJS.Timeout | null>(null);
+  const aiBotManagerRef = useRef<AIChatbotManager>(new AIChatbotManager());
   
   const { toast } = useToast();
+  
+  // Setup session handler for auto-logout on window close
+  const { handleLogout } = useSessionHandler(currentUser, () => {
+    setCurrentUser(null);
+    setCurrentDirectChat(null);
+    setCurrentChatPartner(null);
+    setDirectMessages([]);
+    localStorage.clear();
+  });
 
   const avatarColors = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
@@ -127,7 +140,151 @@ const Chat = () => {
       });
   }, [currentDirectChat, scrollToBottom]);
 
-  // Setup matching subscription
+  // Find and match with users (prioritize real users, fallback to AI)
+  const findMatch = useCallback(async () => {
+    if (!currentUser || currentDirectChat) return;
+
+    try {
+      // First, try to find real users
+      const { data: availableUsers } = await supabase
+        .from('casual_users')
+        .select('*')
+        .eq('status', 'available')
+        .neq('id', currentUser.id)
+        .not('id', 'like', 'ai_%') // Exclude AI bots
+        .gte('last_active', new Date(Date.now() - 60000).toISOString()) // Last 1 minute
+        .limit(5);
+
+      if (availableUsers && availableUsers.length > 0) {
+        const targetUser = availableUsers[0];
+        
+        // Update both users to matched
+        await Promise.all([
+          supabase.from('casual_users').update({ status: 'matched' }).eq('id', currentUser.id),
+          supabase.from('casual_users').update({ status: 'matched' }).eq('id', targetUser.id)
+        ]);
+        
+        // Create chat
+        const { data: chatData, error: chatError } = await supabase
+          .from('direct_chats')
+          .insert({
+            user1_id: currentUser.id,
+            user2_id: targetUser.id,
+            user1_username: currentUser.username,
+            user2_username: targetUser.username,
+            last_message_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+
+        if (!chatError && chatData) {
+          setCurrentChatPartner(targetUser);
+          setCurrentDirectChat(chatData);
+          setDirectMessages([]);
+          setIsSearchingForMatch(false);
+          setIsConnectedToBot(false);
+          
+          localStorage.setItem('current_chat', JSON.stringify(chatData));
+          localStorage.setItem('chat_partner', JSON.stringify(targetUser));
+          
+          toast({
+            title: "Connected!",
+            description: `You're now chatting with ${targetUser.username}`,
+          });
+        }
+      } else {
+        // No real users available, create AI bot
+        await createAIBotMatch();
+      }
+    } catch (error) {
+      console.error('Error finding match:', error);
+    }
+  }, [currentUser, currentDirectChat, toast]);
+
+  // Create AI bot match when no real users available
+  const createAIBotMatch = useCallback(async () => {
+    if (!currentUser || currentDirectChat) return;
+
+    try {
+      const aiBot = await aiBotManagerRef.current.createAIBot();
+      if (aiBot) {
+        const botData = aiBot.getUserData();
+        
+        // Update user status to matched
+        await supabase.from('casual_users').update({ status: 'matched' }).eq('id', currentUser.id);
+        
+        // Create chat with AI bot
+        const { data: chatData, error: chatError } = await supabase
+          .from('direct_chats')
+          .insert({
+            user1_id: currentUser.id,
+            user2_id: botData.id,
+            user1_username: currentUser.username,
+            user2_username: botData.username,
+            last_message_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+
+        if (!chatError && chatData) {
+          setCurrentChatPartner(botData as CasualUser);
+          setCurrentDirectChat(chatData);
+          setDirectMessages([]);
+          setIsSearchingForMatch(false);
+          setIsConnectedToBot(true);
+          
+          localStorage.setItem('current_chat', JSON.stringify(chatData));
+          localStorage.setItem('chat_partner', JSON.stringify(botData));
+          
+          toast({
+            title: "Connected!",
+            description: `You're now chatting with ${botData.username} (AI)`,
+          });
+
+          // Send initial AI message after a brief delay
+          setTimeout(() => {
+            const response = aiBot.generateResponse('');
+            setTimeout(async () => {
+              await supabase
+                .from('direct_messages')
+                .insert({
+                  chat_id: chatData.id,
+                  sender_id: botData.id,
+                  sender_username: botData.username,
+                  content: response.message,
+                  message_type: 'text'
+                });
+            }, response.delay);
+          }, 1000);
+        }
+      }
+    } catch (error) {
+      console.error('Error creating AI bot match:', error);
+    }
+  }, [currentUser, currentDirectChat, toast]);
+
+  // Start matching process - now defined after findMatch
+  const startMatching = useCallback(() => {
+    if (matchingRef.current || currentDirectChat) return;
+    
+    setIsSearchingForMatch(true);
+    findMatch(); // Try immediately
+    
+    matchingRef.current = setInterval(() => {
+      findMatch();
+    }, 3000);
+  }, [findMatch, currentDirectChat]);
+
+  // Stop matching
+  const stopMatching = useCallback(() => {
+    setIsSearchingForMatch(false);
+    if (matchingRef.current) {
+      clearInterval(matchingRef.current);
+      matchingRef.current = null;
+    }
+  }, []);
+
+  // Setup matching and disconnect subscriptions
   const setupMatchingSubscription = useCallback(() => {
     if (!currentUser || matchingChannelRef.current) return;
 
@@ -172,10 +329,33 @@ const Chat = () => {
           }
         }
       )
+      .on(
+        'broadcast',
+        { event: 'partner-disconnected' },
+        (payload) => {
+          if (payload.payload.partnerId === currentUser.id) {
+            // Partner disconnected, auto-disconnect this user too
+            setCurrentChatPartner(null);
+            setCurrentDirectChat(null);
+            setDirectMessages([]);
+            
+            localStorage.removeItem('current_chat');
+            localStorage.removeItem('chat_partner');
+            
+            toast({
+              title: "Partner left",
+              description: "Your chat partner disconnected. Finding someone new...",
+            });
+            
+            // Automatically start looking for new match
+            setTimeout(() => startMatching(), 1000);
+          }
+        }
+      )
       .subscribe();
-  }, [currentUser, toast]);
+  }, [currentUser, toast, startMatching]);
 
-  // Send message
+  // Send message (handle AI responses)
   const sendMessage = useCallback(async () => {
     if (!newMessage.trim() || !currentUser || !currentDirectChat) return;
 
@@ -201,88 +381,33 @@ const Chat = () => {
           description: "Failed to send message. Please try again.",
           variant: "destructive"
         });
+        return;
+      }
+
+      // If connected to AI bot, generate response
+      if (isConnectedToBot && currentChatPartner) {
+        const aiBot = aiBotManagerRef.current.getBot(currentChatPartner.id);
+        if (aiBot) {
+          const response = aiBot.generateResponse(messageContent);
+          
+          setTimeout(async () => {
+            await supabase
+              .from('direct_messages')
+              .insert({
+                chat_id: currentDirectChat.id,
+                sender_id: currentChatPartner.id,
+                sender_username: currentChatPartner.username,
+                content: response.message,
+                message_type: 'text'
+              });
+          }, response.delay);
+        }
       }
     } catch (err) {
       console.error('Error in sendMessage:', err);
       setNewMessage(messageContent);
     }
-  }, [newMessage, currentUser, currentDirectChat, toast]);
-
-  // Find and match with users
-  const findMatch = useCallback(async () => {
-    if (!currentUser || currentDirectChat) return;
-
-    try {
-      const { data: availableUsers } = await supabase
-        .from('casual_users')
-        .select('*')
-        .eq('status', 'available')
-        .neq('id', currentUser.id)
-        .gte('last_active', new Date(Date.now() - 60000).toISOString()) // Last 1 minute
-        .limit(5);
-
-      if (availableUsers && availableUsers.length > 0) {
-        const targetUser = availableUsers[0];
-        
-        // Update both users to matched
-        await supabase.rpc('atomic_match_users', {
-          user1_id: currentUser.id,
-          user2_id: targetUser.id
-        });
-        
-        // Create chat
-        const { data: chatData, error: chatError } = await supabase
-          .from('direct_chats')
-          .insert({
-            user1_id: currentUser.id,
-            user2_id: targetUser.id,
-            user1_username: currentUser.username,
-            user2_username: targetUser.username,
-            last_message_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-
-        if (!chatError && chatData) {
-          setCurrentChatPartner(targetUser);
-          setCurrentDirectChat(chatData);
-          setDirectMessages([]);
-          setIsSearchingForMatch(false);
-          
-          localStorage.setItem('current_chat', JSON.stringify(chatData));
-          localStorage.setItem('chat_partner', JSON.stringify(targetUser));
-          
-          toast({
-            title: "Connected!",
-            description: `You're now chatting with ${targetUser.username}`,
-          });
-        }
-      }
-    } catch (error) {
-      console.error('Error finding match:', error);
-    }
-  }, [currentUser, currentDirectChat, toast]);
-
-  // Start matching process
-  const startMatching = useCallback(() => {
-    if (matchingRef.current || currentDirectChat) return;
-    
-    setIsSearchingForMatch(true);
-    findMatch(); // Try immediately
-    
-    matchingRef.current = setInterval(() => {
-      findMatch();
-    }, 3000);
-  }, [findMatch, currentDirectChat]);
-
-  // Stop matching
-  const stopMatching = useCallback(() => {
-    setIsSearchingForMatch(false);
-    if (matchingRef.current) {
-      clearInterval(matchingRef.current);
-      matchingRef.current = null;
-    }
-  }, []);
+  }, [newMessage, currentUser, currentDirectChat, isConnectedToBot, currentChatPartner, toast]);
 
   // Heartbeat to maintain presence
   const startHeartbeat = useCallback(() => {
@@ -342,22 +467,38 @@ const Chat = () => {
     }
   };
 
-  // Skip to next user
+  // Skip to next user and disconnect partner
   const skipToNextUser = async () => {
     if (!currentChatPartner || !currentUser) return;
     
     const partnerName = currentChatPartner.username;
+    const partnerId = currentChatPartner.id;
+    const isAIBot = partnerId.startsWith('ai_');
     
     try {
-      // Set both users back to available
-      await Promise.all([
-        supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id),
-        supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id)
-      ]);
+      if (isAIBot) {
+        // Remove AI bot
+        await aiBotManagerRef.current.removeAIBot(partnerId);
+      } else {
+        // Set real user back to available and send disconnect signal
+        await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id);
+        
+        await supabase
+          .channel('user-disconnect')
+          .send({
+            type: 'broadcast',
+            event: 'partner-disconnected',
+            payload: { disconnectedUserId: currentUser.id, partnerId: partnerId }
+          });
+      }
+      
+      // Set current user back to available
+      await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id);
       
       setCurrentChatPartner(null);
       setCurrentDirectChat(null);
       setDirectMessages([]);
+      setIsConnectedToBot(false);
       
       localStorage.removeItem('current_chat');
       localStorage.removeItem('chat_partner');

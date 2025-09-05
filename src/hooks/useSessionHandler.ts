@@ -42,35 +42,47 @@ export const useSessionHandler = (
 
     let isPageUnloading = false;
 
-    // Handle beforeunload (page close/refresh) - DON'T logout on refresh
+    // Handle beforeunload (page close/refresh)
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       isPageUnloading = true;
       
-      // Only logout on actual page close, not refresh
-      // We detect this by checking if user navigates away completely
-      setTimeout(() => {
-        if (isPageUnloading) {
-          // This runs if page is actually closing/navigating away
-          supabase
-            .from('casual_users')
-            .update({ status: 'offline' })
-            .eq('id', currentUser.id);
-        }
-      }, 100);
+      // Set user offline immediately on page close
+      navigator.sendBeacon && navigator.sendBeacon(
+        'data:text/plain',
+        JSON.stringify({ action: 'logout', userId: currentUser.id })
+      );
+      
+      // Also update status to offline
+      supabase
+        .from('casual_users')
+        .update({ status: 'offline' })
+        .eq('id', currentUser.id);
+    };
+
+    // Handle page show event (back/forward navigation)
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        // Page was restored from cache, update status
+        supabase
+          .from('casual_users')
+          .update({ 
+            status: 'available',
+            last_active: new Date().toISOString()
+          })
+          .eq('id', currentUser.id);
+      }
     };
 
     // Handle visibility change (tab switch, minimize)
     const handleVisibilityChange = () => {
-      isPageUnloading = false; // Reset unloading flag when visibility changes
-      
       if (document.hidden) {
         // User switched away - update last_active but keep online
         supabase
           .from('casual_users')
           .update({ last_active: new Date().toISOString() })
           .eq('id', currentUser.id);
-      } else {
-        // User returned - update status and last_active
+      } else if (!isPageUnloading) {
+        // User returned - update status and last_active (only if not unloading)
         supabase
           .from('casual_users')
           .update({ 
@@ -83,7 +95,7 @@ export const useSessionHandler = (
 
     // Handle focus/blur events
     const handleFocus = () => {
-      if (currentUser) {
+      if (currentUser && !isPageUnloading) {
         supabase
           .from('casual_users')
           .update({ 
@@ -105,6 +117,8 @@ export const useSessionHandler = (
 
     // Add event listeners
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload); // Also handle pagehide
+    window.addEventListener('pageshow', handlePageShow);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('focus', handleFocus);
     window.addEventListener('blur', handleBlur);
@@ -112,6 +126,8 @@ export const useSessionHandler = (
     // Cleanup on unmount or user change
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+      window.removeEventListener('pageshow', handlePageShow);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('blur', handleBlur);
