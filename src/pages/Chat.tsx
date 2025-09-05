@@ -333,11 +333,13 @@ const Chat = () => {
         'broadcast',
         { event: 'partner-disconnected' },
         (payload) => {
-          if (payload.payload.partnerId === currentUser.id) {
+          console.log('Partner disconnected broadcast received:', payload);
+          if (payload.payload && payload.payload.partnerId === currentUser.id) {
             // Partner disconnected, auto-disconnect this user too
             setCurrentChatPartner(null);
             setCurrentDirectChat(null);
             setDirectMessages([]);
+            setIsConnectedToBot(false);
             
             localStorage.removeItem('current_chat');
             localStorage.removeItem('chat_partner');
@@ -347,8 +349,11 @@ const Chat = () => {
               description: "Your chat partner disconnected. Finding someone new...",
             });
             
-            // Automatically start looking for new match
-            setTimeout(() => startMatching(), 1000);
+            // Set user back to available and automatically start looking for new match
+            supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id)
+              .then(() => {
+                setTimeout(() => startMatching(), 1000);
+              });
           }
         }
       )
@@ -483,13 +488,14 @@ const Chat = () => {
         // Set real user back to available and send disconnect signal
         await supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id);
         
-        await supabase
-          .channel('user-disconnect')
-          .send({
+        // Send disconnect broadcast on the matching channel
+        if (matchingChannelRef.current) {
+          await matchingChannelRef.current.send({
             type: 'broadcast',
             event: 'partner-disconnected',
-            payload: { disconnectedUserId: currentUser.id, partnerId: partnerId }
+            payload: { partnerId: partnerId }
           });
+        }
       }
       
       // Set current user back to available
@@ -742,8 +748,32 @@ const Chat = () => {
 
             <div className="p-4 border-t">
               <div className="flex gap-2">
-                <MediaUpload onMediaUploaded={(url, type) => {
-                  // Handle media upload if needed
+                <MediaUpload onMediaUploaded={async (url, type) => {
+                  if (!currentUser || !currentDirectChat) return;
+                  
+                  try {
+                    const { error } = await supabase
+                      .from('direct_messages')
+                      .insert({
+                        chat_id: currentDirectChat.id,
+                        sender_id: currentUser.id,
+                        sender_username: currentUser.username,
+                        content: type === 'image' ? 'Shared an image' : 'Shared a video',
+                        message_type: type,
+                        media_url: url
+                      });
+
+                    if (error) {
+                      console.error('Error sending media:', error);
+                      toast({
+                        title: "Error",
+                        description: "Failed to send media. Please try again.",
+                        variant: "destructive"
+                      });
+                    }
+                  } catch (err) {
+                    console.error('Error in media upload:', err);
+                  }
                 }} />
                 <Input
                   ref={inputRef}
