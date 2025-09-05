@@ -9,31 +9,6 @@ import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { MediaUpload } from '@/components/MediaUpload';
 import { MessageRenderer } from '@/components/MessageRenderer';
-// === AI ADDITION START ===
-const BOT_NAMES = [
-  'Rahul','Sneha','Arjun','Mariya','Fathima',
-  'Anna','Caroline','Safiya','Jeni','Jennifer','Nicole'
-];
-
-const randomDelay = (min = 700, max = 1800) =>
-  Math.floor(min + Math.random() * (max - min));
-
-const botReply = (humanMsg: string) => {
-  const starters = [
-    'Interesting! ', 'Got it. ', 'Makes sense. ',
-    'Haha, true. ', 'I see. ', 'Tell me more— '
-  ];
-  const followups = [
-    'what do you think?','how did that happen?',
-    'have you tried anything else?','why do you feel that way?',
-    "that's pretty cool.","I'm curious now."
-  ];
-  const echo = humanMsg ? humanMsg.slice(0, 120) : '';
-  return `${starters[Math.floor(Math.random()*starters.length)]}` +
-    `${echo ? `"${echo}" — ` : ''}` +
-    `${followups[Math.floor(Math.random()*followups.length)]}`;
-};
-// === AI ADDITION END ===
 
 interface CasualUser {
   id: string;
@@ -72,36 +47,6 @@ const Chat = () => {
   const [username, setUsername] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
-
-  // === AI ADDITION START ===
-const ensureBotsExist = useCallback(async () => {
-  const { data: existing } = await supabase
-    .from('casual_users')
-    .select('username')
-    .in('username', BOT_NAMES);
-
-  const existingSet = new Set((existing || []).map(r => r.username));
-  const toCreate = BOT_NAMES.filter(n => !existingSet.has(n));
-{
-  if (toCreate.length) {
-    const rows = toCreate.map(n => ({
-      username: n,
-      avatar_color: avatarColors[Math.floor(Math.random()*avatarColors.length)],
-      status: 'available',
-      is_bot: true,
-      last_active: new Date().toISOString()
-    }));
-    await supabase.from('casual_users').insert(rows);
-  }
-}, []);
-
-useEffect(() => {
-  if (currentUser) {
-    ensureBotsExist();
-  }
-}, [currentUser]);
-// === AI ADDITION END ===
-
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -497,27 +442,6 @@ useEffect(() => {
       };
     }
   }, [currentDirectChat, loadMessages, setupMessageSubscription]);
-
-  {
-    // === AI ADDITION START ===
-if (currentChatPartner?.is_bot && newMessage.sender_id === currentUser?.id) {
-  if (botTimerRef.current) clearTimeout(botTimerRef.current);
-  botTimerRef.current = setTimeout(async () => {
-    await supabase.from('direct_messages').insert({
-      chat_id: currentDirectChat!.id,
-      sender_id: currentChatPartner.id,
-      sender_username: currentChatPartner.username,
-      content: botReply(newMessage.content || ''),
-      message_type: 'text'
-    });
-    await supabase.from('casual_users').update({
-      last_active: new Date().toISOString(),
-      status: 'matched'
-    }).eq('id', currentChatPartner.id);
-  }, randomDelay());
-}
-// === AI ADDITION END ===
-
 
   useEffect(() => {
     scrollToBottom();
