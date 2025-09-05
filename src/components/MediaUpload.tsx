@@ -4,21 +4,7 @@ import { Input } from '@/components/ui/input';
 import { ImageIcon, VideoIcon, Upload } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-<MediaUpload onMediaUploaded={async (url, type) => {
-  if (!currentUser || !currentDirectChat) return;
-  try {
-    await supabase.from('direct_messages').insert({
-      chat_id: currentDirectChat.id,
-      sender_id: currentUser.id,
-      sender_username: currentUser.username,
-      content: type === 'image' ? '[image]' : type === 'video' ? '[video]' : '[file]',
-      message_type: type,           // 'image' | 'video' | 'file' (whatever you emit)
-      media_url: url
-    });
-  } catch (e) {
-    console.error('media send failed', e);
-    toast({ title: 'Upload failed', description: 'Could not send media', variant: 'destructive' });
-  }
+
 interface MediaUploadProps {
   onMediaUploaded: (url: string, type: 'image' | 'video') => void;
 }
