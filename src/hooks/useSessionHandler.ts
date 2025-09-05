@@ -40,23 +40,29 @@ export const useSessionHandler = (
   useEffect(() => {
     if (!currentUser) return;
 
-    // Handle beforeunload (page close/refresh)
-    const handleBeforeUnload = () => {
-      // Use sendBeacon for reliable logout on page close
-      if (navigator.sendBeacon) {
-        const logoutData = new FormData();
-        logoutData.append('user_id', currentUser.id);
-        navigator.sendBeacon('/api/logout', logoutData);
-      }
+    let isPageUnloading = false;
+
+    // Handle beforeunload (page close/refresh) - DON'T logout on refresh
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      isPageUnloading = true;
       
-      // Immediate local cleanup
-      localStorage.removeItem('casual_user');
-      localStorage.removeItem('current_chat');
-      localStorage.removeItem('chat_partner');
+      // Only logout on actual page close, not refresh
+      // We detect this by checking if user navigates away completely
+      setTimeout(() => {
+        if (isPageUnloading) {
+          // This runs if page is actually closing/navigating away
+          supabase
+            .from('casual_users')
+            .update({ status: 'offline' })
+            .eq('id', currentUser.id);
+        }
+      }, 100);
     };
 
     // Handle visibility change (tab switch, minimize)
     const handleVisibilityChange = () => {
+      isPageUnloading = false; // Reset unloading flag when visibility changes
+      
       if (document.hidden) {
         // User switched away - update last_active but keep online
         supabase
