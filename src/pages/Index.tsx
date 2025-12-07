@@ -211,45 +211,46 @@ const Index = () => {
         </div>
       </div>
 
-      {/* Footer with more ad spaces */}
+      {/* Footer */}
       <footer className="border-t bg-card/50 mt-16">
-        <div className="max-w-7xl mx-auto px-4 py-12">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-            <Card className="p-4 bg-gradient-to-br from-cyan-100 to-cyan-200 dark:from-cyan-900/20 dark:to-cyan-800/20">
-              <CardContent className="p-0 text-center">
-                <h4 className="font-semibold text-cyan-800 dark:text-cyan-200 mb-2">Footer Ad</h4>
-                <div className="p-4 bg-white/50 dark:bg-black/20 rounded">
-                  <p className="text-xs text-cyan-700 dark:text-cyan-300">250x150</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="p-4 bg-gradient-to-br from-violet-100 to-violet-200 dark:from-violet-900/20 dark:to-violet-800/20">
-              <CardContent className="p-0 text-center">
-                <h4 className="font-semibold text-violet-800 dark:text-violet-200 mb-2">Sponsor</h4>
-                <div className="p-4 bg-white/50 dark:bg-black/20 rounded">
-                  <p className="text-xs text-violet-700 dark:text-violet-300">250x150</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="p-4 bg-gradient-to-br from-emerald-100 to-emerald-200 dark:from-emerald-900/20 dark:to-emerald-800/20">
-              <CardContent className="p-0 text-center">
-                <h4 className="font-semibold text-emerald-800 dark:text-emerald-200 mb-2">Partner</h4>
-                <div className="p-4 bg-white/50 dark:bg-black/20 rounded">
-                  <p className="text-xs text-emerald-700 dark:text-emerald-300">250x150</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="p-4 bg-gradient-to-br from-rose-100 to-rose-200 dark:from-rose-900/20 dark:to-rose-800/20">
-              <CardContent className="p-0 text-center">
-                <h4 className="font-semibold text-rose-800 dark:text-rose-200 mb-2">Featured</h4>
-                <div className="p-4 bg-white/50 dark:bg-black/20 rounded">
-                  <p className="text-xs text-rose-700 dark:text-rose-300">250x150</p>
-                </div>
-              </CardContent>
-            </Card>
+        <div className="max-w-7xl mx-auto px-4 py-8">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-8">
+            <div>
+              <h4 className="font-semibold mb-4">Quick Links</h4>
+              <ul className="space-y-2 text-muted-foreground">
+                <li><Link to="/" className="hover:text-foreground transition-colors">Home</Link></li>
+                <li><Link to="/chat" className="hover:text-foreground transition-colors">Start Chatting</Link></li>
+                <li><Link to="/about" className="hover:text-foreground transition-colors">About Us</Link></li>
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-semibold mb-4">Legal</h4>
+              <ul className="space-y-2 text-muted-foreground">
+                <li><Link to="/privacy" className="hover:text-foreground transition-colors">Privacy Policy</Link></li>
+                <li><Link to="/terms" className="hover:text-foreground transition-colors">Terms & Conditions</Link></li>
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-semibold mb-4">Support</h4>
+              <ul className="space-y-2 text-muted-foreground">
+                <li><Link to="/contact" className="hover:text-foreground transition-colors">Contact Us</Link></li>
+                <li><Link to="/safety" className="hover:text-foreground transition-colors">Safety Tips</Link></li>
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-semibold mb-4">Connect</h4>
+              <p className="text-muted-foreground text-sm">Join our global community of anonymous chatters worldwide.</p>
+            </div>
           </div>
-          <div className="text-center text-muted-foreground">
-            <p>&copy; 2024 StrangerChat. Connecting people worldwide through conversation.</p>
+          <div className="text-center text-muted-foreground border-t pt-8">
+            <p>&copy; 2024 StrangerChat. All rights reserved.</p>
+            <p className="text-xs mt-2">
+              <Link to="/privacy" className="hover:text-foreground">Privacy</Link>
+              {' • '}
+              <Link to="/terms" className="hover:text-foreground">Terms</Link>
+              {' • '}
+              <Link to="/contact" className="hover:text-foreground">Contact</Link>
+            </p>
           </div>
         </div>
       </footer>
