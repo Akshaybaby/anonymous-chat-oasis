@@ -2,10 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent } from '@/components/ui/card';
-import { Send, MessageCircle, Home, SkipForward } from 'lucide-react';
+import { Card } from '@/components/ui/card';
+import { Send, MessageCircle, Home, SkipForward, X } from 'lucide-react';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { MediaUpload } from '@/components/MediaUpload';
 import { MessageRenderer } from '@/components/MessageRenderer';
@@ -38,6 +38,11 @@ interface DirectChat {
   last_message_at: string;
 }
 
+interface PendingMedia {
+  url: string;
+  type: 'image' | 'video';
+}
+
 const Chat = () => {
   const [currentUser, setCurrentUser] = useState<CasualUser | null>(null);
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
@@ -47,15 +52,18 @@ const Chat = () => {
   const [username, setUsername] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [isSearchingForMatch, setIsSearchingForMatch] = useState(false);
+  const [pendingMedia, setPendingMedia] = useState<PendingMedia | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const messageChannelRef = useRef<any>(null);
   const matchingChannelRef = useRef<any>(null);
+  const partnerStatusChannelRef = useRef<any>(null);
   const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
   const matchingRef = useRef<NodeJS.Timeout | null>(null);
   
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   const avatarColors = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
@@ -91,6 +99,36 @@ const Chat = () => {
     }
   }, [currentDirectChat, scrollToBottom]);
 
+  // Handle partner disconnect - triggered when partner leaves
+  const handlePartnerDisconnect = useCallback(async () => {
+    if (!currentUser) return;
+    
+    const partnerName = currentChatPartner?.username || 'Your partner';
+    
+    // Clear current chat state
+    setCurrentChatPartner(null);
+    setCurrentDirectChat(null);
+    setDirectMessages([]);
+    setPendingMedia(null);
+    
+    localStorage.removeItem('current_chat');
+    localStorage.removeItem('chat_partner');
+    
+    // Set self back to available
+    await supabase
+      .from('casual_users')
+      .update({ status: 'available' })
+      .eq('id', currentUser.id);
+    
+    toast({
+      title: "Partner left",
+      description: `${partnerName} has left the chat. Finding someone new...`,
+    });
+    
+    // Start finding new match
+    setIsSearchingForMatch(true);
+  }, [currentUser, currentChatPartner, toast]);
+
   // Setup real-time message subscription
   const setupMessageSubscription = useCallback(() => {
     if (!currentDirectChat || messageChannelRef.current) return;
@@ -112,7 +150,6 @@ const Chat = () => {
           const newMessage = payload.new as DirectMessage;
           
           setDirectMessages(prev => {
-            // Avoid duplicates
             if (prev.some(msg => msg.id === newMessage.id)) {
               return prev;
             }
@@ -126,6 +163,37 @@ const Chat = () => {
         console.log('Message subscription status:', status);
       });
   }, [currentDirectChat, scrollToBottom]);
+
+  // Setup partner status subscription - detect when partner leaves
+  const setupPartnerStatusSubscription = useCallback(() => {
+    if (!currentChatPartner || partnerStatusChannelRef.current) return;
+
+    console.log('Setting up partner status subscription for:', currentChatPartner.id);
+    
+    partnerStatusChannelRef.current = supabase
+      .channel(`partner-status-${currentChatPartner.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'casual_users',
+          filter: `id=eq.${currentChatPartner.id}`
+        },
+        (payload) => {
+          const updatedPartner = payload.new as CasualUser;
+          console.log('Partner status changed:', updatedPartner.status);
+          
+          // If partner became available, they left the chat
+          if (updatedPartner.status === 'available') {
+            handlePartnerDisconnect();
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log('Partner status subscription:', status);
+      });
+  }, [currentChatPartner, handlePartnerDisconnect]);
 
   // Setup matching subscription
   const setupMatchingSubscription = useCallback(() => {
@@ -147,7 +215,6 @@ const Chat = () => {
             const partnerId = newChat.user1_id === currentUser.id ? newChat.user2_id : newChat.user1_id;
             const partnerUsername = newChat.user1_id === currentUser.id ? newChat.user2_username : newChat.user1_username;
             
-            // Get partner details
             const { data: partner } = await supabase
               .from('casual_users')
               .select('*')
@@ -160,7 +227,6 @@ const Chat = () => {
               setDirectMessages([]);
               setIsSearchingForMatch(false);
               
-              // Save to localStorage
               localStorage.setItem('current_chat', JSON.stringify(newChat));
               localStorage.setItem('chat_partner', JSON.stringify(partner));
               
@@ -175,12 +241,15 @@ const Chat = () => {
       .subscribe();
   }, [currentUser, toast]);
 
-  // Send message
+  // Send message (with optional media)
   const sendMessage = useCallback(async () => {
-    if (!newMessage.trim() || !currentUser || !currentDirectChat) return;
+    if ((!newMessage.trim() && !pendingMedia) || !currentUser || !currentDirectChat) return;
 
-    const messageContent = newMessage.trim();
+    const messageContent = newMessage.trim() || (pendingMedia ? `Shared ${pendingMedia.type}` : '');
+    const mediaToSend = pendingMedia;
+    
     setNewMessage('');
+    setPendingMedia(null);
 
     try {
       const { error } = await supabase
@@ -190,12 +259,14 @@ const Chat = () => {
           sender_id: currentUser.id,
           sender_username: currentUser.username,
           content: messageContent,
-          message_type: 'text'
+          message_type: mediaToSend ? mediaToSend.type : 'text',
+          media_url: mediaToSend?.url || null
         });
 
       if (error) {
         console.error('Error sending message:', error);
-        setNewMessage(messageContent); // Restore message on error
+        setNewMessage(messageContent);
+        setPendingMedia(mediaToSend);
         toast({
           title: "Error",
           description: "Failed to send message. Please try again.",
@@ -205,8 +276,9 @@ const Chat = () => {
     } catch (err) {
       console.error('Error in sendMessage:', err);
       setNewMessage(messageContent);
+      setPendingMedia(mediaToSend);
     }
-  }, [newMessage, currentUser, currentDirectChat, toast]);
+  }, [newMessage, pendingMedia, currentUser, currentDirectChat, toast]);
 
   // Find and match with users
   const findMatch = useCallback(async () => {
@@ -218,17 +290,17 @@ const Chat = () => {
         .select('*')
         .eq('status', 'available')
         .neq('id', currentUser.id)
-        .gte('last_active', new Date(Date.now() - 60000).toISOString()) // Last 1 minute
+        .gte('last_active', new Date(Date.now() - 60000).toISOString())
         .limit(5);
 
       if (availableUsers && availableUsers.length > 0) {
         const targetUser = availableUsers[0];
         
-        // Update both users to matched
-        await supabase.rpc('atomic_match_users', {
-          user1_id: currentUser.id,
-          user2_id: targetUser.id
-        });
+        // Update both users to matched status
+        await Promise.all([
+          supabase.from('casual_users').update({ status: 'matched' }).eq('id', currentUser.id),
+          supabase.from('casual_users').update({ status: 'matched' }).eq('id', targetUser.id)
+        ]);
         
         // Create chat
         const { data: chatData, error: chatError } = await supabase
@@ -268,7 +340,7 @@ const Chat = () => {
     if (matchingRef.current || currentDirectChat) return;
     
     setIsSearchingForMatch(true);
-    findMatch(); // Try immediately
+    findMatch();
     
     matchingRef.current = setInterval(() => {
       findMatch();
@@ -342,35 +414,56 @@ const Chat = () => {
     }
   };
 
-  // Skip to next user
+  // Skip to next user - also disconnects partner
   const skipToNextUser = async () => {
-    if (!currentChatPartner || !currentUser) return;
+    if (!currentUser) return;
     
-    const partnerName = currentChatPartner.username;
+    const partnerName = currentChatPartner?.username;
     
     try {
-      // Set both users back to available
-      await Promise.all([
-        supabase.from('casual_users').update({ status: 'available' }).eq('id', currentChatPartner.id),
-        supabase.from('casual_users').update({ status: 'available' }).eq('id', currentUser.id)
-      ]);
+      // Set current user back to available (this triggers partner's subscription)
+      await supabase
+        .from('casual_users')
+        .update({ status: 'available' })
+        .eq('id', currentUser.id);
       
+      // Clear local state
       setCurrentChatPartner(null);
       setCurrentDirectChat(null);
       setDirectMessages([]);
+      setPendingMedia(null);
       
       localStorage.removeItem('current_chat');
       localStorage.removeItem('chat_partner');
       
       toast({
         title: "Finding new person",
-        description: `Left chat with ${partnerName}. Looking for someone new...`,
+        description: partnerName ? `Left chat with ${partnerName}. Looking for someone new...` : 'Looking for someone new...',
       });
       
-      startMatching();
+      // Start matching for new partner
+      setIsSearchingForMatch(true);
     } catch (error) {
       console.error('Error skipping user:', error);
     }
+  };
+
+  // Go home - disconnect and navigate
+  const goHome = async () => {
+    if (currentUser) {
+      // Set user to available to trigger partner disconnect
+      await supabase
+        .from('casual_users')
+        .update({ status: 'available' })
+        .eq('id', currentUser.id);
+    }
+    
+    // Clear all state
+    localStorage.removeItem('casual_user');
+    localStorage.removeItem('current_chat');
+    localStorage.removeItem('chat_partner');
+    
+    navigate('/');
   };
 
   // Cleanup channels
@@ -383,11 +476,24 @@ const Chat = () => {
       supabase.removeChannel(matchingChannelRef.current);
       matchingChannelRef.current = null;
     }
+    if (partnerStatusChannelRef.current) {
+      supabase.removeChannel(partnerStatusChannelRef.current);
+      partnerStatusChannelRef.current = null;
+    }
   }, []);
+
+  // Handle media upload - preview before sending
+  const handleMediaUploaded = (url: string, type: 'image' | 'video') => {
+    setPendingMedia({ url, type });
+  };
+
+  // Remove pending media
+  const removePendingMedia = () => {
+    setPendingMedia(null);
+  };
 
   // Main effects
   useEffect(() => {
-    // Restore session
     const savedUser = localStorage.getItem('casual_user');
     const savedChat = localStorage.getItem('current_chat');
     const savedPartner = localStorage.getItem('chat_partner');
@@ -405,7 +511,6 @@ const Chat = () => {
 
   useEffect(() => {
     if (currentUser) {
-      // Set user online
       supabase
         .from('casual_users')
         .update({ 
@@ -429,19 +534,43 @@ const Chat = () => {
     }
   }, [currentUser, currentDirectChat, setupMatchingSubscription, startHeartbeat, startMatching, cleanupChannels]);
 
+  // Setup subscriptions when chat partner changes
   useEffect(() => {
     if (currentDirectChat) {
       loadMessages();
       setupMessageSubscription();
+      setupPartnerStatusSubscription();
+      stopMatching();
       
       return () => {
         if (messageChannelRef.current) {
           supabase.removeChannel(messageChannelRef.current);
           messageChannelRef.current = null;
         }
+        if (partnerStatusChannelRef.current) {
+          supabase.removeChannel(partnerStatusChannelRef.current);
+          partnerStatusChannelRef.current = null;
+        }
       };
     }
-  }, [currentDirectChat, loadMessages, setupMessageSubscription]);
+  }, [currentDirectChat, loadMessages, setupMessageSubscription, setupPartnerStatusSubscription, stopMatching]);
+
+  // Re-trigger matching when searching
+  useEffect(() => {
+    if (isSearchingForMatch && !matchingRef.current && !currentDirectChat) {
+      findMatch();
+      matchingRef.current = setInterval(() => {
+        findMatch();
+      }, 3000);
+    }
+    
+    return () => {
+      if (!isSearchingForMatch && matchingRef.current) {
+        clearInterval(matchingRef.current);
+        matchingRef.current = null;
+      }
+    };
+  }, [isSearchingForMatch, currentDirectChat, findMatch]);
 
   useEffect(() => {
     scrollToBottom();
@@ -520,12 +649,10 @@ const Chat = () => {
               <span className="font-medium">{currentUser.username}</span>
             </div>
             <ThemeToggle />
-            <Link to="/">
-              <Button variant="outline" size="sm" className="gap-2">
-                <Home className="w-4 h-4" />
-                Home
-              </Button>
-            </Link>
+            <Button variant="outline" size="sm" className="gap-2" onClick={goHome}>
+              <Home className="w-4 h-4" />
+              Home
+            </Button>
           </div>
         </div>
       </div>
@@ -600,10 +727,38 @@ const Chat = () => {
             </div>
 
             <div className="p-4 border-t">
+              {/* Pending media preview */}
+              {pendingMedia && (
+                <div className="mb-3 relative inline-block">
+                  <div className="relative rounded-lg overflow-hidden border bg-muted p-2">
+                    {pendingMedia.type === 'image' ? (
+                      <img 
+                        src={pendingMedia.url} 
+                        alt="Pending upload" 
+                        className="max-h-32 max-w-[200px] rounded object-cover"
+                      />
+                    ) : (
+                      <video 
+                        src={pendingMedia.url} 
+                        className="max-h-32 max-w-[200px] rounded"
+                        controls
+                      />
+                    )}
+                    <button
+                      onClick={removePendingMedia}
+                      className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 hover:bg-destructive/90"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Click send to share this {pendingMedia.type}
+                  </p>
+                </div>
+              )}
+              
               <div className="flex gap-2">
-                <MediaUpload onMediaUploaded={(url, type) => {
-                  // Handle media upload if needed
-                }} />
+                <MediaUpload onMediaUploaded={handleMediaUploaded} />
                 <Input
                   ref={inputRef}
                   placeholder="Type your message..."
@@ -621,7 +776,7 @@ const Chat = () => {
                 <Button 
                   onClick={sendMessage} 
                   size="icon"
-                  disabled={!newMessage.trim()}
+                  disabled={!newMessage.trim() && !pendingMedia}
                 >
                   <Send className="w-4 h-4" />
                 </Button>
